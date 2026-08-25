@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light dark;
+  /* Valores por defecto (teal); useAccent los sobreescribe segun lo elegido
+   * en Ajustes y los persiste en localStorage. */
+  --accent-400: #2dd4bf;
+  --accent-500: #14b8a6;
+  --accent-600: #0d9488;
+  --accent-700: #0f766e;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-neutral-100 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Feedback visual generico para todo lo pulsable: cursor + atenuacion en
+ * hover. Asi no hace falta repetir hover: en cada boton de la app. */
+@layer base {
+  button:not(:disabled),
+  [role="button"],
+  label:has(input[type="checkbox"]),
+  label:has(input[type="radio"]) {
+    cursor: pointer;
+  }
+  button:not(:disabled):hover,
+  [role="button"]:hover {
+    opacity: 0.85;
+  }
+  button:not(:disabled) {
+    transition: opacity 150ms ease, background-color 150ms ease;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+/* Bobina (Spool) en uso durante una impresion: solo gira la rueda (sentido
+ * antihorario) -- el hilo colgante se dejo estatico tras tres intentos de
+ * animarlo (vaiven rigido, "latigo" de dos tramos, flujo de trazos) sin
+ * convencer; ver Spool.tsx. */
+@keyframes spool-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+
+/* Slot de filamento recien guardado: brillo parpadeante mientras se espera
+ * confirmacion real del hardware (KX-Bridge tarda unos segundos en reportar
+ * el cambio), en vez de mostrar el color/material anterior de golpe. */
+@keyframes slot-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-500) 70%, transparent),
+      0 0 14px 2px color-mix(in srgb, var(--accent-500) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-500) 10%, transparent),
+      0 0 4px 0 transparent;
+  }
+}
+.slot-applying {
+  animation: slot-glow 1.1s ease-in-out infinite;
+}

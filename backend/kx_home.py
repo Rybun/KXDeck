@@ -1,0 +1,172 @@
+"""Home de KXDeck: sirve el panel nativo de KX-Bridge en / (via kx_proxy,
+sin prefijo -- ya no hace falta reescribir rutas absolutas como hacia el
+antiguo kxbridge_proxy.py), con las tarjetas propias de KXDeck (visor
+gcode, saltar objetos, carretes, color de acento, notificaciones)
+inyectadas dentro de su dashboard/ajustes. El bundle que las monta vive en
+frontend/src/widgets/entry.tsx.
+
+Insercion basada en marcadores estables (no en texto traducido -- la propia
+pagina cambia de idioma en tiempo real). Si KX-Bridge cambia la estructura
+de su Panel y algun marcador deja de encontrarse, esa insercion en
+concreto simplemente se omite -- el panel de KX-Bridge en si nunca se ve
+afectado por esto."""
+
+import json
+import os
+
+import aiohttp
+from aiohttp import web
+
+import static
+from config import KX_URL, log
+
+_WIDGET_SLOT_MARKER = '<div id="dash-hidden-bar"></div>'
+_APPEARANCE_MARKER = '<div class="set-group" id="setgrp-display">'
+_INTEGRATIONS_MARKER = '<div class="set-group" id="setgrp-integrations">'
+_CAM_MARKER = '<div class="cam-wrap" id="cam-wrap">'
+_LOGO_OPEN = '<div class="logo">'
+_STYLE_CLOSE = "</style>"
+
+# Mismo trazo que src/components/KxDeckLogo.tsx (simbolo "KX"), pero como
+# HTML/CSS suelto en vez de React -- este va directo en la pagina nativa de
+# KX-Bridge (luz, no shadow DOM), asi que no puede depender de clases de
+# Tailwind. "--accent" (variable nativa) ya existe desde el primer pintado
+# (KX-Bridge la define en su propio :root), asi que el icono nunca hace
+# FOUC aunque el bundle de widgets tarde en cargar -- y si el usuario elige
+# otro color en Ajustes -> Darstellung, se recolorea solo (ver lib/accent.ts).
+_LOGO_HTML = (
+    '<div class="logo" style="display:flex;align-items:center;gap:8px">'
+    '<span style="display:flex;align-items:center;justify-content:center;'
+    'width:22px;height:22px;border-radius:22%;background:var(--accent);flex-shrink:0">'
+    '<svg viewBox="0 0 324 244" width="14" height="14" fill="none" stroke="#fff" '
+    'stroke-width="44" stroke-linecap="butt">'
+    '<path d="M122 22 L122 222"/><path d="M202 22 L202 222"/>'
+    '<path d="M122 122 L22 22"/><path d="M122 122 L22 222"/>'
+    '<path d="M202 122 L302 22"/><path d="M202 122 L302 222"/>'
+    "</svg></span>KXDeck</div>"
+)
+
+# Favicon: KX-Bridge no trae ninguno propio (su <head> no tiene ni un solo
+# <link rel="icon">, el navegador cae al default /favicon.ico, que el
+# catchall generico reenvia a KX-Bridge y probablemente ni existe ahi).
+# Los ficheros SI existen y ya se sirven en la raiz por static.py
+# (ROOT_STATIC_FILES) -- solo faltaba enlazarlos desde el <head>.
+_HEAD_EXTRA = (
+    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+    '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">'
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+    "<style>"
+    # ".layout" (sidebar + main) vive dentro de un body flex-column con solo
+    # min-height:100vh (sin height ni overflow propios): si el contenido de
+    # main crece mas de una pantalla, el body entero crece con el y quien
+    # scrollea pasa a ser LA PAGINA, arrastrando consigo a "nav.sidebar" (un
+    # simple hermano en flujo normal, sin position:sticky/fixed) -- se
+    # pierde de la izquierda al bajar. Fijar la altura del body a 100vh y
+    # cortar su overflow obliga a que SIEMPRE sea "main" (overflow-y:auto)
+    # quien scrollea por dentro, como el propio CSS de KX-Bridge ya da a
+    # entender que queria (de ahi el min-height:0 en .layout, un truco que
+    # solo tiene sentido si el contenedor exterior tiene altura fija) -- el
+    # sidebar, al quedar fuera de "main", deja de moverse nunca.
+    "html,body{height:100vh;overflow:hidden}"
+    "</style>"
+)
+
+MANIFEST_PATH = os.path.join(static.STATIC_DIR, ".vite", "manifest.json")
+_WIDGETS_ENTRY = "src/widgets/entry.tsx"
+
+
+def load_widgets_js():
+    """Resuelve el nombre real (con hash) del bundle de widgets a partir del
+    manifest de Vite. Se llama una vez al arrancar (ver app.py); si falta el
+    manifest o la entrada, se degrada a "sin widgets" sin romper nada."""
+    try:
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        entry = manifest.get(_WIDGETS_ENTRY)
+        if entry and entry.get("file"):
+            return f"/{entry['file']}"
+        log.warning("entrada '%s' no encontrada en el manifest de Vite: sin widgets en /", _WIDGETS_ENTRY)
+    except FileNotFoundError:
+        log.warning("manifest de Vite no encontrado (%s): sin widgets inyectados en /", MANIFEST_PATH)
+    except Exception as exc:
+        log.warning("no se pudo leer el manifest de Vite: %s", exc)
+    return None
+
+
+def _replace_logo(html):
+    start = html.find(_LOGO_OPEN)
+    if start == -1:
+        log.warning("'.logo' no encontrado en el panel de KX-Bridge: sin logo de KXDeck ahi")
+        return html
+    close = html.find("</div>", start)
+    if close == -1:
+        return html
+    return html[:start] + _LOGO_HTML + html[close + len("</div>"):]
+
+
+def _insert_after(html, marker, extra, warn_msg):
+    idx = html.find(marker)
+    if idx == -1:
+        log.warning(warn_msg)
+        return html
+    pos = idx + len(marker)
+    return html[:pos] + extra + html[pos:]
+
+
+async def h_home(request):
+    session = request.app["session"]
+    try:
+        async with session.get(f"{KX_URL}/", timeout=aiohttp.ClientTimeout(total=15)) as upstream:
+            html = await upstream.text()
+            status = upstream.status
+            cache_control = upstream.headers.get("Cache-Control", "no-store, no-cache, must-revalidate")
+    except Exception as exc:
+        log.error("kx-bridge home fetch failed: %s", exc)
+        return web.Response(status=502, text=f"kx-bridge unreachable: {exc}")
+
+    if _STYLE_CLOSE in html:
+        html = html.replace(_STYLE_CLOSE, _STYLE_CLOSE + _HEAD_EXTRA, 1)
+    else:
+        log.warning("cierre de '<style>' no encontrado: sin favicon/fix de sidebar en KX-Bridge")
+
+    html = _replace_logo(html)
+
+    widgets_js = request.app.get("widgets_js")
+    if widgets_js:
+        if _WIDGET_SLOT_MARKER in html:
+            slot = (
+                f'{_WIDGET_SLOT_MARKER}\n'
+                f'      <div id="kxdeck-widgets-root"></div>'
+                f'<script type="module" src="{widgets_js}"></script>'
+            )
+            html = html.replace(_WIDGET_SLOT_MARKER, slot, 1)
+        else:
+            log.warning("marcador de insercion de widgets no encontrado en el panel de KX-Bridge")
+
+        html = _insert_after(
+            html, _APPEARANCE_MARKER,
+            '\n      <div id="kxd-appearance-root" style="margin-bottom:10px"></div>',
+            "marcador de Ajustes -> Darstellung no encontrado: sin selector de acento ahi",
+        )
+        html = _insert_after(
+            html, _INTEGRATIONS_MARKER,
+            '\n      <div id="kxd-integrations-root" style="margin-bottom:10px"></div>',
+            "marcador de Ajustes -> Integrationen no encontrado: sin notificaciones ahi",
+        )
+
+        # Marcador vacio justo antes de #cam-wrap: el propio bundle de
+        # widgets se encarga (en JS, no aqui) de mover #cam-wrap junto a el
+        # dentro de una fila comun, para que el visor de gcode comparta
+        # tarjeta con la camara (lado a lado si cabe, con pestañas si no).
+        # Se hace en JS y no con string-matching aqui porque #cam-wrap
+        # contiene divs anidados (placeholder, overlay...) y encontrar SU
+        # cierre exacto por texto seria fragil.
+        if _CAM_MARKER in html:
+            html = html.replace(_CAM_MARKER, '<div id="kxd-cam-gcode-root"></div>' + _CAM_MARKER, 1)
+        else:
+            log.warning("'#cam-wrap' no encontrado: sin visor de gcode junto a la camara")
+
+    return web.Response(
+        text=html, status=status, content_type="text/html",
+        headers={"Cache-Control": cache_control},
+    )

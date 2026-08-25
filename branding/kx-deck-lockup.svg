@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="370" height="120" viewBox="0 0 370 120" role="img" aria-label="KX Deck">
+  <title>KX Deck</title>
+  <g transform="translate(0,11.2) scale(0.4)" fill="none" stroke="currentColor" stroke-width="44" stroke-linecap="butt">
+    <path d="M122 22 L122 222"/>
+    <path d="M202 22 L202 222"/>
+    <path d="M122 122 L22 22"/>
+    <path d="M122 122 L22 222"/>
+    <path d="M202 122 L302 22"/>
+    <path d="M202 122 L302 222"/>
+  </g>
+  <text x="160" y="77" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="48" font-weight="500" letter-spacing="1" fill="currentColor">KX Deck</text>
+</svg>
