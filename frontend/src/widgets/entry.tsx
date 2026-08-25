@@ -1714,6 +1714,70 @@ actions:
   );
 }
 
+function injectHeaderMenuStyle() {
+  if (document.getElementById("kxd-header-menu-style")) return;
+  const style = document.createElement("style");
+  style.id = "kxd-header-menu-style";
+  style.textContent =
+    "#kxd-header-menu-btn{display:none}" +
+    "@media(max-width:640px){" +
+    "header{position:relative}" +
+    "#kxd-header-menu-btn{display:inline-flex!important}" +
+    "#kxd-header-menu{display:none;position:absolute;top:100%;right:12px;margin-top:6px;" +
+    "background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px;" +
+    "flex-direction:column;align-items:stretch;gap:6px;z-index:200;box-shadow:0 4px 16px #0006;" +
+    "min-width:180px}" +
+    "#kxd-header-menu.kxd-open{display:flex}" +
+    "}";
+  document.head.appendChild(style);
+}
+
+/** En movil el header nativo (nombre/version de impresora, tema, ajustes,
+ * conectar/desconectar) no cabe en una sola fila junto al logo y al badge
+ * de estado -- se agrupan todos esos controles (todo menos el logo y el
+ * badge "LISTO") detras de un boton de menu hamburguesa que solo se ve por
+ * debajo de 640px (ver injectHeaderMenuStyle). En desktop no cambia nada
+ * visualmente: siguen en la misma fila que en el panel nativo, el
+ * hamburguesa esta oculto. Los elementos se MUEVEN (no se clonan), asi que
+ * el JS nativo que ya los controla por ID/clase (togglePrinterDropdown,
+ * toggleTheme, showPanel, toggleConnection) sigue funcionando igual. */
+function patchHeaderMobileMenu() {
+  const header = document.querySelector<HTMLElement>("header");
+  const badge = document.getElementById("h-badge");
+  if (!header || !badge || document.getElementById("kxd-header-menu-btn")) return;
+  injectHeaderMenuStyle();
+
+  const ids = ["printer-dropdown-wrap", "h-pname-single", "h-version"];
+  const selectors = [".theme-btn", "#settings-btn", "#conn-btn"];
+  const items = [
+    ...ids.map((id) => document.getElementById(id)),
+    ...selectors.map((sel) => header.querySelector<HTMLElement>(sel)),
+  ].filter((el): el is HTMLElement => !!el);
+  if (!items.length) return;
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "kxd-header-menu";
+  header.insertBefore(wrapper, badge);
+  items.forEach((el) => wrapper.appendChild(el));
+
+  const menuBtn = document.createElement("button");
+  menuBtn.id = "kxd-header-menu-btn";
+  menuBtn.className = "theme-btn";
+  menuBtn.title = "Más opciones";
+  menuBtn.textContent = "☰";
+  menuBtn.onclick = (e) => {
+    e.stopPropagation();
+    wrapper.classList.toggle("kxd-open");
+  };
+  header.appendChild(menuBtn);
+
+  document.addEventListener("click", (e) => {
+    if (wrapper.classList.contains("kxd-open") && !wrapper.contains(e.target as Node)) {
+      wrapper.classList.remove("kxd-open");
+    }
+  });
+}
+
 function patchSettingsCards() {
   const appearance = document.getElementById("kxd-appearance-root");
   if (appearance) createRoot(mountShadowRoot(appearance)).render(<AccentSettingsCard />);
@@ -1739,6 +1803,7 @@ async function mount() {
   patchNativeCamera();
   patchNativeCameraLight();
   patchSidebarCollapse();
+  patchHeaderMobileMenu();
   patchNativeFilamentIcons();
   patchGrowingCard("card-progress");
   patchGrowingCard("card-temps");
