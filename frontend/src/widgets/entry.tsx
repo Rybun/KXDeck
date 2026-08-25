@@ -1226,10 +1226,32 @@ function FilamentDialogPreview() {
   );
 }
 
+/** El dialogo nativo "Asignar canal a ranura AMS" (#filament-dialog) trae su
+ * .modal-box fijado a max-width:380px -- pensado para una simple lista de
+ * <select>, no para la vista previa 3D/2D/GCode que le añade KXDeck encima.
+ * En desktop eso dejaba la preview diminuta en medio de una pantalla enorme
+ * sin usar; en movil, ese mismo ancho tan ajustado es lo bastante estrecho
+ * como para que algo dentro (el propio dialogo, no esta preview) se
+ * desborde y la pagina entera gane scroll horizontal. Se ensancha SOLO este
+ * dialogo (selector con id, no toca el resto de .modal-box nativos) y se le
+ * pone overflow-x:hidden de resguardo -- por debajo de 900px se queda igual
+ * que el original, en escritorio gana espacio real sin llegar a ir de borde
+ * a borde (el propio .modal-overlay ya lo centra). */
+function injectFilamentDialogStyle() {
+  if (document.getElementById("kxd-fd-dialog-style")) return;
+  const style = document.createElement("style");
+  style.id = "kxd-fd-dialog-style";
+  style.textContent =
+    "#filament-dialog .modal-box{overflow-x:hidden}" +
+    "@media(min-width:900px){#filament-dialog .modal-box{max-width:820px}}";
+  document.head.appendChild(style);
+}
+
 function patchFilamentDialogPreview() {
   const hint = document.getElementById("fd-slots-hint");
   const dialog = document.getElementById("filament-dialog");
   if (!hint || !dialog || !hint.parentElement || document.getElementById("kxd-fd-preview-root")) return;
+  injectFilamentDialogStyle();
 
   const container = document.createElement("div");
   container.id = "kxd-fd-preview-root";
