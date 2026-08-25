@@ -10,8 +10,8 @@ This is an independent, unofficial, community project — not maintained or supp
 
 - Combined camera + interactive GCode viewer during a print: skipped/omitted objects grayed out, 90° rotate to match your camera's mount, smooth layer scrubbing (background-prefetches nearby layers).
 - Richer pre-print dialog: on top of KX-Bridge's own "assign GCode channel to AMS slot" screen, KXDeck overlays a live 3D/2D/GCode preview of the actual parts, with the piece highlighted in 3D as you hover each channel — a much more intuitive way to see what color/filament goes where before you commit. Its "skip objects" tab is a friendlier alternative to the native checklist, fully in sync with it either way.
-- Print progress widget, AMS spool status animation, pause-at-layer/time scheduling.
-- Speed / fan / light controls, accent color theming.
+- Print progress widget with smoother scrolling, and an AMS spool status animation.
+- Accent color theming.
 - Optional Home Assistant integration: control a room light (or several) right next to the camera light toggle. Two-way webhook bridge — KXDeck never stores a long-lived Home Assistant access token. The exact automation YAML to paste into HA is generated live in Settings → Integrations, from whatever you've already filled in.
 
 ## Quick start
