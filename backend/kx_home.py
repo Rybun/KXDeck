@@ -39,9 +39,13 @@ _STYLE_CLOSE = "</style>"
 # en cargar -- y si el usuario elige otro color de acento en Ajustes ->
 # Darstellung, el icono se recolorea solo (ver lib/accent.ts).
 _LOGO_BADGE = (
-    '<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;'
-    'font-size:11px;font-weight:500;color:var(--txt2);letter-spacing:normal;'
-    'vertical-align:middle">'
+    # En movil (ver el @media en _HEAD_EXTRA) se oculta entera -- el sidebar
+    # nativo ahi es tan estrecho que el texto se parte en varias lineas y el
+    # icono queda descolocado; mejor dejar solo "KX-Bridge" tal cual, como
+    # en el resto de la app nativa.
+    '<span class="kxd-logo-badge" style="display:inline-flex;align-items:center;gap:4px;'
+    'margin-left:8px;font-size:11px;font-weight:500;color:var(--txt2);'
+    'letter-spacing:normal;vertical-align:middle;white-space:nowrap">'
     '<span style="display:inline-flex;align-items:center;justify-content:center;'
     'width:14px;height:14px;border-radius:22%;background:var(--accent);flex-shrink:0">'
     '<svg viewBox="0 0 324 244" width="8" height="8" fill="none" stroke="#fff" '
@@ -95,6 +99,10 @@ _HEAD_EXTRA = (
     # solo tiene sentido si el contenedor exterior tiene altura fija) -- el
     # sidebar, al quedar fuera de "main", deja de moverse nunca.
     "html,body{height:100vh;overflow:hidden}"
+    # Ver _LOGO_BADGE: en pantallas estrechas (movil) el sidebar nativo no
+    # tiene sitio para el badge sin partirlo en varias lineas -- se oculta
+    # entero y se deja solo "KX-Bridge".
+    "@media(max-width:640px){.kxd-logo-badge{display:none!important}}"
     "</style>"
 )
 
