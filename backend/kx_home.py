@@ -18,32 +18,59 @@ import aiohttp
 from aiohttp import web
 
 import static
-from config import KX_URL, log
+from config import KX_URL, KXDECK_VERSION, log
 
 _WIDGET_SLOT_MARKER = '<div id="dash-hidden-bar"></div>'
 _APPEARANCE_MARKER = '<div class="set-group" id="setgrp-display">'
 _INTEGRATIONS_MARKER = '<div class="set-group" id="setgrp-integrations">'
+_SYSTEM_MARKER = '<div class="set-group" id="setgrp-system">'
 _CAM_MARKER = '<div class="cam-wrap" id="cam-wrap">'
 _LOGO_OPEN = '<div class="logo">'
 _STYLE_CLOSE = "</style>"
 
-# Mismo trazo que src/components/KxDeckLogo.tsx (simbolo "KX"), pero como
-# HTML/CSS suelto en vez de React -- este va directo en la pagina nativa de
-# KX-Bridge (luz, no shadow DOM), asi que no puede depender de clases de
-# Tailwind. "--accent" (variable nativa) ya existe desde el primer pintado
-# (KX-Bridge la define en su propio :root), asi que el icono nunca hace
-# FOUC aunque el bundle de widgets tarde en cargar -- y si el usuario elige
-# otro color en Ajustes -> Darstellung, se recolorea solo (ver lib/accent.ts).
-_LOGO_HTML = (
-    '<div class="logo" style="display:flex;align-items:center;gap:8px">'
-    '<span style="display:flex;align-items:center;justify-content:center;'
-    'width:22px;height:22px;border-radius:22%;background:var(--accent);flex-shrink:0">'
-    '<svg viewBox="0 0 324 244" width="14" height="14" fill="none" stroke="#fff" '
+# Pequena marca "enhanced by KXDeck" anadida DENTRO del propio div.logo
+# nativo (se deja su contenido -- icono hexagono + "KX-Bridge" -- tal cual,
+# esto solo se APPENDea antes de su cierre). Mismo trazo que
+# branding/kx-deck-symbol.svg, pero como HTML/CSS suelto en vez de React --
+# va directo en la pagina nativa de KX-Bridge (luz, no shadow DOM), asi que
+# no puede depender de clases de Tailwind. "--accent"/"--txt2" (variables
+# nativas) ya existen desde el primer pintado (KX-Bridge las define en su
+# propio :root), asi que nunca hace FOUC aunque el bundle de widgets tarde
+# en cargar -- y si el usuario elige otro color de acento en Ajustes ->
+# Darstellung, el icono se recolorea solo (ver lib/accent.ts).
+_LOGO_BADGE = (
+    '<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;'
+    'font-size:11px;font-weight:500;color:var(--txt2);letter-spacing:normal;'
+    'vertical-align:middle">'
+    '<span style="display:inline-flex;align-items:center;justify-content:center;'
+    'width:14px;height:14px;border-radius:22%;background:var(--accent);flex-shrink:0">'
+    '<svg viewBox="0 0 324 244" width="8" height="8" fill="none" stroke="#fff" '
     'stroke-width="44" stroke-linecap="butt">'
     '<path d="M122 22 L122 222"/><path d="M202 22 L202 222"/>'
     '<path d="M122 122 L22 22"/><path d="M122 122 L22 222"/>'
     '<path d="M202 122 L302 22"/><path d="M202 122 L302 222"/>'
-    "</svg></span>KXDeck</div>"
+    "</svg></span>enhanced by KXDeck</span>"
+)
+
+# Tarjeta de "Acerca de KXDeck" anadida al final del grupo de Ajustes ->
+# System (justo al lado de la propia tarjeta "Version" de KX-Bridge) --
+# deja claro que lo que se esta viendo es KX-Bridge con KXDeck inyectado
+# encima (proyecto de terceros, independiente), mas su licencia y el build
+# concreto desplegado (KXDECK_VERSION, ver config.py -- viene del commit de
+# git con el que se genero la imagen, "dev" si se construyo en local sin
+# pasar ese build-arg).
+_ABOUT_CARD = (
+    '<div class="card" style="margin-top:10px">'
+    '<div class="card-title"><span>ℹ️</span> KXDeck</div>'
+    '<p style="font-size:12px;color:var(--txt2);margin:6px 0 0;line-height:1.5">'
+    'Este panel es <b>KX-Bridge</b> con <b>KXDeck</b> inyectado encima -- un '
+    "proyecto de terceros, independiente, no mantenido por el equipo de "
+    "KX-Bridge.</p>"
+    '<div style="font-size:11px;color:var(--txt2);margin-top:8px;font-family:var(--mono)">'
+    f"KXDeck {KXDECK_VERSION} &middot; Licencia MIT &middot; "
+    '<a href="https://github.com/Rybun/KXDeck" target="_blank" rel="noreferrer" '
+    'style="color:inherit">github.com/Rybun/KXDeck</a>'
+    "</div></div>"
 )
 
 # Favicon: KX-Bridge no trae ninguno propio (su <head> no tiene ni un solo
@@ -93,15 +120,15 @@ def load_widgets_js():
     return None
 
 
-def _replace_logo(html):
+def _badge_logo(html):
     start = html.find(_LOGO_OPEN)
     if start == -1:
-        log.warning("'.logo' no encontrado en el panel de KX-Bridge: sin logo de KXDeck ahi")
+        log.warning("'.logo' no encontrado en el panel de KX-Bridge: sin marca de KXDeck ahi")
         return html
     close = html.find("</div>", start)
     if close == -1:
         return html
-    return html[:start] + _LOGO_HTML + html[close + len("</div>"):]
+    return html[:close] + _LOGO_BADGE + html[close:]
 
 
 def _insert_after(html, marker, extra, warn_msg):
@@ -129,7 +156,11 @@ async def h_home(request):
     else:
         log.warning("cierre de '<style>' no encontrado: sin favicon/fix de sidebar en KX-Bridge")
 
-    html = _replace_logo(html)
+    html = _badge_logo(html)
+    html = _insert_after(
+        html, _SYSTEM_MARKER, _ABOUT_CARD,
+        "marcador de Ajustes -> System no encontrado: sin tarjeta 'Acerca de KXDeck' ahi",
+    )
 
     widgets_js = request.app.get("widgets_js")
     if widgets_js:

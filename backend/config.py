@@ -5,6 +5,11 @@ import os
 import re
 
 KX_URL = os.environ.get("KX_URL", "http://192.168.1.100:7125").rstrip("/")
+# Identificador del build desplegado (commit corto de git), para ensenarlo
+# en la tarjeta "Acerca de KXDeck" (ver kx_home.py). El workflow de CI pasa
+# el SHA completo como build-arg -- se recorta aqui a 7 caracteres (lo
+# habitual en git); "dev" tal cual si se construyo en local sin pasarlo.
+KXDECK_VERSION = os.environ.get("KXDECK_VERSION", "dev")[:7]
 API_KEY = os.environ.get("API_KEY", "kxbridge0000000000000000000000000")
 # Dominios por los que NO se debe poder entrar (p.ej. un dominio publico que
 # en su dia se uso para acceso externo y ya no se quiere mantener). Vacio
