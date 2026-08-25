@@ -16,6 +16,7 @@ import asyncio
 import aiohttp
 from aiohttp import web
 
+import general_settings
 import ha_settings
 import kx_home
 import kx_proxy
@@ -23,7 +24,7 @@ import kxdeck_api
 import moonraker_api
 import printer_control as pc
 import static
-from config import BLOCKED_HOSTS, DEBUG_REQUESTS, LISTEN_PORT, KX_URL, PREWARM, log
+from config import BLOCKED_HOSTS, DEBUG_REQUESTS, LISTEN_PORT, KX_URL, log
 from kx_client import KxFiles, KxHistory, KxState, LayerTracker, PauseSchedule, TempHistory
 
 
@@ -60,13 +61,16 @@ async def on_startup(app):
     # "desconocida" hasta que llegue su primer webhook de estado real de HA
     # (ver ha_settings.py::h_light_state_webhook) -- nunca se asume on/off.
     app["ha_light_states"] = {}
+    app["general_settings"] = general_settings.load_settings()
 
     log.info("KXDeck -> %s (puerto %s)", KX_URL, LISTEN_PORT)
 
     app["tracker_task"] = asyncio.create_task(pc.tracker_loop(app))
-
-    if PREWARM:
-        app["prewarm_task"] = asyncio.create_task(pc.prewarm_loop(app))
+    # Siempre se lanza (antes solo si PREWARM) -- el propio bucle mira
+    # app["general_settings"]["prewarm_enabled"] en cada vuelta, asi que
+    # activarlo/desactivarlo desde Ajustes -> KXDeck se aplica sin reiniciar
+    # el contenedor (ver printer_control.py::prewarm_loop).
+    app["prewarm_task"] = asyncio.create_task(pc.prewarm_loop(app))
 
 
 async def on_cleanup(app):
@@ -106,6 +110,9 @@ def build_app():
 
     # --- Integracion con Home Assistant (luz de la habitacion) ---
     ha_settings.register(r)
+
+    # --- Ajustes generales de KXDeck (Ajustes -> KXDeck) ---
+    general_settings.register(r)
 
     # --- Los pocos endpoints Moonraker donde KXDeck aporta algo real ---
     moonraker_api.register(r)

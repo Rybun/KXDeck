@@ -1800,6 +1800,119 @@ function patchHeaderMobileMenu() {
   });
 }
 
+// Que inyecciones son opcionales (Ajustes -> KXDeck, ver KxDeckFeaturesCard)
+// y bajo que llave de localStorage. Activadas por defecto -- solo se
+// desactivan si el usuario lo pide expresamente. Se leen UNA vez al
+// arrancar (antes de llamar a cada patchXxx en mount()), asi que un cambio
+// aqui no se aplica hasta recargar la pagina (avisado en la propia
+// tarjeta) -- son patches que enganchan listeners/observers al cargar, no
+// tiene sentido desmontarlos en caliente.
+const FEATURE_DEFS = [
+  { key: "cameraGcode", label: "Cámara + visor GCode combinados" },
+  { key: "filamentIcons", label: "Bobinas animadas en la tarjeta de filamento" },
+  { key: "sidebarCollapse", label: "Botón de colapsar menú lateral" },
+  { key: "headerMobileMenu", label: "Menú hamburguesa en móvil" },
+  { key: "filamentDialogPreview", label: "Vista previa 3D al preparar una impresión" },
+  { key: "haLight", label: "Interruptor de luz de Home Assistant junto a la cámara" },
+] as const;
+type FeatureKey = (typeof FEATURE_DEFS)[number]["key"];
+
+function isFeatureEnabled(key: FeatureKey): boolean {
+  return localStorage.getItem(`kxdeck.feature.${key}`) !== "0";
+}
+
+function setFeatureEnabled(key: FeatureKey, enabled: boolean) {
+  localStorage.setItem(`kxdeck.feature.${key}`, enabled ? "1" : "0");
+}
+
+interface GeneralSettings {
+  prewarm_enabled: boolean;
+}
+
+/** Tarjeta de la categoria "KXDeck" en Ajustes (ver backend/kx_home.py,
+ * marcador #kxd-features-root): que inyecta KXDeck en el panel nativo
+ * (toggles solo de navegador, requieren recargar) y si el renderizado
+ * 3D/2D en segundo plano debe correr (ajuste real de servidor via
+ * general_settings.py, se aplica sin recargar -- lo lee el propio bucle en
+ * cada vuelta). */
+function KxDeckFeaturesCard() {
+  const [flags, setFlags] = useState<Record<FeatureKey, boolean>>(() =>
+    Object.fromEntries(FEATURE_DEFS.map((f) => [f.key, isFeatureEnabled(f.key)])) as Record<FeatureKey, boolean>,
+  );
+  const [prewarm, setPrewarm] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [changed, setChanged] = useState(false);
+
+  useEffect(() => {
+    apiGet<GeneralSettings>("/api/kxdeck/settings/general")
+      .then((s) => setPrewarm(s.prewarm_enabled))
+      .catch(() => setError("No se han podido cargar los ajustes de KXDeck."));
+  }, []);
+
+  function toggleFeature(key: FeatureKey, checked: boolean) {
+    setFeatureEnabled(key, checked);
+    setFlags((f) => ({ ...f, [key]: checked }));
+    setChanged(true);
+  }
+
+  async function togglePrewarm(checked: boolean) {
+    const prev = prewarm;
+    setPrewarm(checked);
+    setSaving(true);
+    setError(null);
+    try {
+      await apiPost<GeneralSettings>("/api/kxdeck/settings/general", { prewarm_enabled: checked });
+    } catch {
+      setError("No se ha podido guardar -- se ha dejado como estaba.");
+      setPrewarm(prev);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-neutral-100/10 bg-neutral-900 p-3">
+      <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+        <span>🧩</span> Qué inyecta KXDeck
+      </div>
+      <p className="mb-2 text-xs text-neutral-400">Cambios aquí abajo requieren recargar la página.</p>
+      <div className="space-y-1.5 rounded-lg border border-neutral-100/10 p-2.5">
+        {FEATURE_DEFS.map((f) => (
+          <label key={f.key} className="flex items-center justify-between gap-3 text-sm">
+            <span>{f.label}</span>
+            <input
+              type="checkbox"
+              checked={flags[f.key]}
+              onChange={(e) => toggleFeature(f.key, e.target.checked)}
+              className="accent-[var(--accent-500)]"
+            />
+          </label>
+        ))}
+      </div>
+      {changed && <p className="mt-2 text-xs text-amber-400">Recarga la página para aplicar los cambios.</p>}
+
+      <div className="mt-3 border-t border-neutral-100/10 pt-3">
+        <label className="flex items-center justify-between gap-3 text-sm">
+          <span>Renderizado 3D/2D en segundo plano</span>
+          <input
+            type="checkbox"
+            checked={prewarm ?? false}
+            disabled={prewarm === null || saving}
+            onChange={(e) => togglePrewarm(e.target.checked)}
+            className="accent-[var(--accent-500)]"
+          />
+        </label>
+        <p className="mt-1 text-xs text-neutral-400">
+          Precalienta el render de toda la biblioteca cada pocos minutos para que abrir una pieza sea instantáneo.
+          Se aplica sin recargar.
+        </p>
+        {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
 function patchSettingsCards() {
   const appearance = document.getElementById("kxd-appearance-root");
   if (appearance) createRoot(mountShadowRoot(appearance)).render(<AccentSettingsCard />);
@@ -1812,6 +1925,8 @@ function patchSettingsCards() {
       </div>,
     );
   }
+  const features = document.getElementById("kxd-features-root");
+  if (features) createRoot(mountShadowRoot(features)).render(<KxDeckFeaturesCard />);
 }
 
 async function mount() {
@@ -1823,20 +1938,23 @@ async function mount() {
 
   injectSpoolKeyframes();
   patchNativeCamera();
-  patchNativeCameraLight();
-  patchSidebarCollapse();
-  patchHeaderMobileMenu();
-  patchNativeFilamentIcons();
+  if (isFeatureEnabled("haLight")) patchNativeCameraLight();
+  if (isFeatureEnabled("sidebarCollapse")) patchSidebarCollapse();
+  if (isFeatureEnabled("headerMobileMenu")) patchHeaderMobileMenu();
+  if (isFeatureEnabled("filamentIcons")) patchNativeFilamentIcons();
   patchGrowingCard("card-progress");
   patchGrowingCard("card-temps");
-  patchFilamentDialogPreview();
+  if (isFeatureEnabled("filamentDialogPreview")) patchFilamentDialogPreview();
+  // patchSettingsCards() (con la propia tarjeta de toggles, KxDeckFeaturesCard)
+  // nunca es opcional -- si lo fuera y alguien lo desactivase, no tendria
+  // forma de volver a activarlo salvo borrando localStorage a mano.
   patchSettingsCards();
   // La tarjeta de camara tiene su propia logica de tamaño (dentro de
   // patchCameraGcodeToggle -> sizeCameraRow): patchGrowingCard mide con un
   // clon fuera de pantalla (ver growGridCardToFitContent), que no ve el
   // contenido de un shadow root (el visor de gcode vive en uno) -- ahi
   // mediria siempre vacio.
-  patchCameraGcodeToggle();
+  if (isFeatureEnabled("cameraGcode")) patchCameraGcodeToggle();
 
   if (!getApiKey()) {
     const key = await bootstrapApiKey();

@@ -24,9 +24,24 @@ _WIDGET_SLOT_MARKER = '<div id="dash-hidden-bar"></div>'
 _APPEARANCE_MARKER = '<div class="set-group" id="setgrp-display">'
 _INTEGRATIONS_MARKER = '<div class="set-group" id="setgrp-integrations">'
 _SYSTEM_MARKER = '<div class="set-group" id="setgrp-system">'
+_SETCAT_SYSTEM_MARKER = 'id="setcat-system"'
+_SETTINGS_CONTENT_MARKER = '<div class="settings-content">'
 _CAM_MARKER = '<div class="cam-wrap" id="cam-wrap">'
 _LOGO_OPEN = '<div class="logo">'
 _STYLE_CLOSE = "</style>"
+
+# Nueva categoria de Ajustes "KXDeck" (junto a Verbindung/Drucker/System...),
+# con sus propios toggles (ver KxDeckFeaturesCard en entry.tsx) para
+# activar/desactivar cada cosa que KXDeck inyecta -- por si alguna en
+# concreto molesta o da problemas en un dispositivo, sin tener que tocar
+# variables de entorno ni perder el resto. showSettingsCat('kxdeck') ya
+# funciona solo (es la misma funcion nativa generica que usan el resto de
+# categorias, busca #setgrp-kxdeck/#setcat-kxdeck por convencion de nombre).
+_KXDECK_SETCAT_BTN = (
+    '<button class="set-cat" id="setcat-kxdeck" onclick="showSettingsCat(\'kxdeck\')">'
+    "<span>🧩</span> <span>KXDeck</span></button>"
+)
+_KXDECK_SETGRP = '<div class="set-group" id="setgrp-kxdeck"><div id="kxd-features-root"></div></div>'
 
 # Pequena marca "enhanced by KXDeck" anadida DENTRO del propio div.logo
 # nativo (se deja su contenido -- icono hexagono + "KX-Bridge" -- tal cual,
@@ -148,6 +163,22 @@ def _insert_after(html, marker, extra, warn_msg):
     return html[:pos] + extra + html[pos:]
 
 
+def _insert_after_closing(html, marker, close_tag, extra, warn_msg):
+    """Como _insert_after, pero inserta despues del primer close_tag que
+    aparezca DETRAS de marker -- para anadir un hermano justo despues de un
+    elemento entero (marker solo necesita ser un fragmento estable dentro
+    de ese elemento, no hace falta su apertura exacta)."""
+    idx = html.find(marker)
+    if idx == -1:
+        log.warning(warn_msg)
+        return html
+    close_idx = html.find(close_tag, idx)
+    if close_idx == -1:
+        return html
+    pos = close_idx + len(close_tag)
+    return html[:pos] + extra + html[pos:]
+
+
 async def h_home(request):
     session = request.app["session"]
     try:
@@ -168,6 +199,14 @@ async def h_home(request):
     html = _insert_after(
         html, _SYSTEM_MARKER, _ABOUT_CARD,
         "marcador de Ajustes -> System no encontrado: sin tarjeta 'Acerca de KXDeck' ahi",
+    )
+    html = _insert_after_closing(
+        html, _SETCAT_SYSTEM_MARKER, "</button>", _KXDECK_SETCAT_BTN,
+        "marcador de la categoria 'System' de Ajustes no encontrado: sin pestaña KXDeck ahi",
+    )
+    html = _insert_after(
+        html, _SETTINGS_CONTENT_MARKER, _KXDECK_SETGRP,
+        "'.settings-content' no encontrado: sin categoria KXDeck en Ajustes",
     )
 
     widgets_js = request.app.get("widgets_js")

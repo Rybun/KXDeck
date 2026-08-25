@@ -643,12 +643,18 @@ async def tracker_loop(app):
 async def prewarm_loop(app):
     """Analiza la biblioteca y precalienta el render 3D de todos los
     ficheros al arrancar y cada PREWARM_INTERVAL segundos, para que abrir
-    cualquier pieza sea instantaneo en vez de esperar a que se genere."""
+    cualquier pieza sea instantaneo en vez de esperar a que se genere.
+
+    Mira app["general_settings"]["prewarm_enabled"] en cada vuelta (no solo
+    al arrancar) -- asi que activarlo/desactivarlo desde Ajustes -> KXDeck
+    (ver general_settings.py) se aplica en la siguiente vuelta, sin
+    reiniciar el contenedor."""
     try:
         while True:
             try:
-                await app["files"].prewarm()
-                await app["files"].prewarm_renders()
+                if app["general_settings"]["prewarm_enabled"]:
+                    await app["files"].prewarm()
+                    await app["files"].prewarm_renders()
             except Exception as exc:
                 log.warning("prewarm error: %s", exc)
             await asyncio.sleep(PREWARM_INTERVAL)
