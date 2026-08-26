@@ -1,6 +1,16 @@
 import { useEffect, useRef } from "react";
 import type { Segment } from "../lib/gcodeParser";
 import { colorForFeature, colorForTool } from "../lib/gcodeColors";
+import { BED_TEXTURE_SIZE, BED_TEXTURE_SQUARE_SIZE, bedTextureUrl } from "../lib/bedTexture";
+
+// Mismo SVG que PrintRenderScene.tsx/PrintRenderFlat.tsx (la serigrafia real
+// de la bandeja), pero aqui se rasteriza sobre el <canvas> en vez de
+// inlinearse como <g> SVG -- un solo Image compartido por todas las
+// instancias (el fichero nunca cambia), decodificado una vez por el
+// navegador. Sirve de referencia visual de orientacion (donde esta el borde
+// frontal, la solapa de la etiqueta...) igual que en las otras dos vistas.
+const bedTextureImg = new Image();
+bedTextureImg.src = bedTextureUrl;
 
 // Mismas constantes que PrintRenderScene.tsx/PrintRenderFlat.tsx: el
 // resaltado por hover (Mapeo de colores/Saltar objetos) debe verse y
@@ -137,6 +147,26 @@ export function GcodeCanvas({
       const off = panOffsetRef.current;
       const px = (x: number) => tx(x) - off;
 
+      // Serigrafia de la bandeja, de fondo (misma logica que
+      // bedTextureTransform() en lib/bedTexture.ts, en "top" -- sin
+      // rotacion/skew, solo escala+traslacion, asi que aqui basta con un
+      // drawImage con el rectangulo destino ya calculado, sin pasar por
+      // matrices). El cuadrado util (BED_TEXTURE_SQUARE_SIZE) se encaja
+      // contra el ancho/fondo real de la bandeja; la solapa de la etiqueta
+      // (el resto de BED_TEXTURE_SIZE.height) cuelga por debajo del borde
+      // frontal (y=0), tal cual en la pieza fisica.
+      if (bedTextureImg.complete && bedTextureImg.naturalWidth > 0) {
+        const bedTexScale = Math.min(bedWidth, bedDepth) / BED_TEXTURE_SQUARE_SIZE;
+        ctx.globalAlpha = 1;
+        ctx.drawImage(
+          bedTextureImg,
+          px(0),
+          ty(bedDepth),
+          BED_TEXTURE_SIZE.width * bedTexScale * scale,
+          BED_TEXTURE_SIZE.height * bedTexScale * scale,
+        );
+      }
+
       if (showTravel) {
         ctx.globalAlpha = 1;
         ctx.strokeStyle = "rgba(148,163,184,0.35)";
@@ -177,6 +207,12 @@ export function GcodeCanvas({
     }
 
     draw();
+    // Si este es el primerisimo GcodeCanvas que se monta en toda la sesion,
+    // el Image compartido puede que todavia no haya terminado de decodificar
+    // -- ese primer draw() se queda sin bandeja de fondo. Un solo redibujado
+    // al terminar de cargar (no hace falta mas: a partir de ahi .complete ya
+    // es true para siempre, en este componente y en cualquier otro).
+    if (!bedTextureImg.complete) bedTextureImg.addEventListener("load", draw, { once: true });
     if (animRaf.current != null) cancelAnimationFrame(animRaf.current);
 
     function tick() {
@@ -197,6 +233,7 @@ export function GcodeCanvas({
 
     return () => {
       if (animRaf.current != null) cancelAnimationFrame(animRaf.current);
+      bedTextureImg.removeEventListener("load", draw);
     };
   }, [segments, bedWidth, bedDepth, colorMode, colorsByTool, showTravel, highlightObject, highlightTool, excludedObjects, excludedStyle, occluderRect]);
 
