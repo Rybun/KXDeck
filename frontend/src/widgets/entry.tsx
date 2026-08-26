@@ -710,6 +710,20 @@ function injectSidebarCollapseStyle() {
   document.head.appendChild(style);
 }
 
+/** El <footer> nativo ("© ViewIT ...") vive fuera de <main>, como ultimo
+ * hijo de <body> -- con el body fijado a 100vh/overflow:hidden (ver
+ * _HEAD_EXTRA en kx_home.py, necesario para que la barra lateral nunca
+ * scrollee) eso lo deja SIEMPRE a la vista, pegado abajo del viewport, en
+ * vez de comportarse como un pie de pagina normal (solo visible al bajar
+ * del todo). Se MUEVE (no se clona) dentro de <main>, la unica zona con
+ * scroll propio -- vuelve a aparecer solo al final del contenido. */
+function patchFooterIntoMain() {
+  const footer = document.querySelector("footer");
+  const main = document.querySelector("main");
+  if (!footer || !main || footer.parentElement === main) return;
+  main.appendChild(footer);
+}
+
 function patchSidebarCollapse() {
   const sidebar = document.querySelector<HTMLElement>("nav.sidebar");
   if (!sidebar || document.getElementById("kxd-sidebar-toggle")) return;
@@ -1937,6 +1951,7 @@ async function mount() {
   applyAccent(localStorage.getItem("kxdeck.accent") ?? DEFAULT_ACCENT);
 
   injectSpoolKeyframes();
+  patchFooterIntoMain();
   patchNativeCamera();
   if (isFeatureEnabled("haLight")) patchNativeCameraLight();
   if (isFeatureEnabled("sidebarCollapse")) patchSidebarCollapse();
