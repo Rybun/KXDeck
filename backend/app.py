@@ -50,16 +50,23 @@ _ABRIR_HTML = """<!DOCTYPE html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Abriendo OctoApp…</title>
+  <style>
+    body { font: 17px -apple-system, sans-serif; text-align: center;
+           padding: 3rem 1.5rem; }
+    a.btn { display: inline-block; margin-top: 1.5rem; padding: 1rem 2rem;
+            background: #2196F3; color: #fff; border-radius: 12px;
+            text-decoration: none; font-weight: 600; }
+  </style>
 </head>
 <body>
   <script>
-    window.location.replace("webapp://octoapp.rybun.rocks");
+    window.location.replace("shortcuts://run-shortcut?name=OctoApp");
     setTimeout(function () {
       window.location.replace("https://octoapp.rybun.rocks");
-    }, 1500);
+    }, 4000);
   </script>
   <p>Abriendo OctoApp…</p>
-  <p><a href="webapp://octoapp.rybun.rocks">Pulsa aquí si no se abre sola</a></p>
+  <a class="btn" href="shortcuts://run-shortcut?name=OctoApp">Abrir OctoApp</a>
 </body>
 </html>
 """
