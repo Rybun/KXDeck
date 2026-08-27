@@ -28,6 +28,52 @@ from config import BLOCKED_HOSTS, DEBUG_REQUESTS, LISTEN_PORT, KX_URL, log
 from kx_client import KxFiles, KxHistory, KxState, LayerTracker, PauseSchedule, TempHistory
 
 
+# Pagina redirectora para que una notificacion de Home Assistant abra la
+# PWA instalada en pantalla de inicio (webapp://) en vez del navegador --
+# vive en el mismo origen que octoapp.rybun.rocks (ver docker-compose.yml,
+# ese dominio tunelizado por Cloudflare apunta a este mismo contenedor,
+# puerto 5000) porque la app de HA necesita una URL https normal a la que
+# apuntar, no puede lanzar esquemas custom directamente. Sin auth (no llama
+# a check_key ni depende de ningun middleware de sesion -- no hay ninguno
+# global aqui, ver build_app()) y sin cache, para que el salto se ejecute
+# siempre. IMPORTANTE: esto NO basta por si solo -- octoapp.rybun.rocks
+# esta ademas detras de Cloudflare Access A NIVEL DE BORDE (confirmado con
+# curl -I contra el dominio publico: 302 a cloudflareaccess.com), que
+# intercepta la peticion antes de que llegue siquiera al tunel/este
+# contenedor. Hace falta una Access Application aparte para la ruta
+# /abrir con politica "Bypass" en el dashboard de Cloudflare Zero Trust
+# (o via su API, que no esta configurada aqui) para que de verdad no pida
+# login -- ese paso no se puede hacer desde este servidor.
+_ABRIR_HTML = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Abriendo OctoApp…</title>
+</head>
+<body>
+  <script>
+    window.location.replace("webapp://octoapp.rybun.rocks");
+    setTimeout(function () {
+      window.location.replace("https://octoapp.rybun.rocks");
+    }, 1500);
+  </script>
+  <p>Abriendo OctoApp…</p>
+  <p><a href="webapp://octoapp.rybun.rocks">Pulsa aquí si no se abre sola</a></p>
+</body>
+</html>
+"""
+
+
+async def h_abrir(request):
+    return web.Response(
+        text=_ABRIR_HTML,
+        content_type="text/html",
+        charset="utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @web.middleware
 async def log_requests(request, handler):
     if DEBUG_REQUESTS:
@@ -91,6 +137,9 @@ def build_app():
     # --- Home: panel nativo de KX-Bridge, con las tarjetas de KXDeck
     #     inyectadas dentro (ver kx_home.py) ---
     r.add_get("/", kx_home.h_home)
+
+    # --- Redirector a la PWA instalada (notificaciones de Home Assistant) ---
+    r.add_get("/abrir", h_abrir)
 
     # --- Control directo de la Kobra, del que la webapp KXDeck depende ---
     r.add_post("/api/login", pc.h_login)
