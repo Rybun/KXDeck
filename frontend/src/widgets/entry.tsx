@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useEffect, useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, bootstrapApiKey, getApiKey, setApiKey } from "../api/client";
@@ -2083,6 +2084,29 @@ function KxDeckFeaturesCard() {
   );
 }
 
+let popoverPortalRoot: HTMLElement | null = null;
+
+/** Contenedor de nivel superior para popovers que necesitan escapar del
+ * scroll/recorte propio de las tarjetas del dashboard nativo
+ * (".grid-stack-item-content>.card" trae "overflow-y:auto;overflow-x:hidden"
+ * en el CSS de KX-Bridge -- cualquier position:absolute dentro de una
+ * tarjeta se recorta ahi, o le mete scroll propio a la tarjeta entera, en
+ * vez de flotar por encima de todo como un popover normal).
+ *
+ * Se crea una unica vez, como hijo directo de <body> con su PROPIO shadow
+ * root (mountShadowRoot, mismo mecanismo que cualquier otro montaje de
+ * KXDeck -- el CSS de Tailwind no llega aqui si no se repite alli dentro),
+ * y se reutiliza via createPortal para cualquier popover que lo necesite. */
+function getPopoverPortalRoot(): HTMLElement {
+  if (!popoverPortalRoot) {
+    const host = document.createElement("div");
+    host.id = "kxd-popover-portal";
+    document.body.appendChild(host);
+    popoverPortalRoot = mountShadowRoot(host);
+  }
+  return popoverPortalRoot;
+}
+
 /** Menu "⋮" junto al boton nativo de Pausa (#kxd-pause-menu-root, marcador
  * insertado en kx_home.py justo despues de #d-btn-pause): pausas
  * programadas por capa o por tiempo transcurrido para la impresion en
@@ -2095,19 +2119,34 @@ function KxDeckFeaturesCard() {
  * este imprimiendo AHORA MISMO (ver h_kxdeck_pause_schedule_list, lee
  * kx.filename el mismo), asi que aqui basta con no mostrar nada mientras
  * no hay impresion -- igual que el propio boton de Pausa (#d-ctrl-btns)
- * esta oculto en ese caso. */
+ * esta oculto en ese caso.
+ *
+ * El desplegable se renderiza vía createPortal en getPopoverPortalRoot()
+ * (fijo por coordenadas, no "absolute" colgado del boton) para escapar del
+ * "overflow-y:auto" de la tarjeta -- ver esa funcion. Eso mismo obliga a
+ * detectar el click "fuera" con event.composedPath() en vez de
+ * event.target/Node.contains(): el boton vive en el shadow root de
+ * #kxd-pause-menu-root y el popover en el de #kxd-popover-portal, DOS
+ * arboles de shadow DOM distintos -- un listener en document ve cualquier
+ * click dentro de cualquiera de los dos con el target retargeted al HOST
+ * de ese shadow root (nunca al elemento real que se pulso), asi que
+ * comparar contra el target siempre daba "fuera" y el popover se cerraba
+ * en cuanto se intentaba tocar cualquier cosa dentro (el select, el
+ * input...). composedPath() sí trae la ruta real, shadow-inclusive. */
 function PauseScheduleMenu() {
   const { data } = useKxState();
   const printing = Boolean(data?.state.flags.printing);
   const currLayer = data?.kx.curr_layer;
 
   const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
   const [entries, setEntries] = useState<PauseScheduleEntry[]>([]);
   const [kind, setKind] = useState<"layer" | "time">("layer");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   function refresh() {
     apiGet<{ entries: PauseScheduleEntry[] }>("/api/kxdeck/pause-schedule")
@@ -2115,17 +2154,49 @@ function PauseScheduleMenu() {
       .catch(() => {});
   }
 
+  // Recalcula la posicion a partir del boton real cada vez -- nunca se fija
+  // "una vez" porque la tarjeta (o la ventana) puede haber scrolleado/
+  // cambiado de tamaño desde la ultima vez que se abrio. Clampado al ancho
+  // de la ventana para que en pantallas estrechas el popover (w-64, 256px)
+  // no se salga por la derecha.
+  function reposition() {
+    const rect = btnRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 256;
+    setCoords({
+      top: rect.bottom + 6,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+    });
+  }
+
   useEffect(() => {
-    if (open) refresh();
+    if (!open) return;
+    refresh();
+    reposition();
   }, [open]);
 
-  // Se cierra al hacer click fuera -- mismo patron que cualquier popover
-  // suelto (no hay ningun <dialog>/backdrop nativo de KX-Bridge que
-  // reutilizar aqui, a diferencia de #filament-dialog).
+  // Mientras esta abierto: si la tarjeta (o cualquier ancestro) scrollea o
+  // la ventana cambia de tamaño, el popover (position:fixed, ya fuera de la
+  // tarjeta) se quedaria pegado a coordenadas viejas si no se recalcula.
+  // "scroll" con capture:true en window es lo unico que ve el scroll de
+  // CUALQUIER contenedor descendiente (ese evento no burbujea solo).
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+      const path = e.composedPath();
+      if (btnRef.current && path.includes(btnRef.current)) return;
+      if (popoverRef.current && path.includes(popoverRef.current)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
@@ -2171,8 +2242,9 @@ function PauseScheduleMenu() {
   }
 
   return (
-    <div ref={menuRef} className="relative inline-block">
+    <>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Pausas programadas"
@@ -2180,52 +2252,59 @@ function PauseScheduleMenu() {
       >
         ⋮
       </button>
-      {open && (
-        <div className="absolute left-0 top-full z-50 mt-1.5 w-64 space-y-2 rounded-xl border border-neutral-100/10 bg-neutral-900 p-3 text-sm text-neutral-100 shadow-xl">
-          <div className="font-semibold">⏸ Pausas programadas</div>
-          {entries.length > 0 && (
-            <div className="space-y-1">
-              {entries.map((e) => (
-                <div key={e.id} className="flex items-center justify-between gap-2 rounded-lg bg-neutral-500/10 px-2 py-1">
-                  <span className={e.triggered ? "text-neutral-500 line-through" : ""}>
-                    {e.kind === "layer" ? `Capa ${e.value}` : `A los ${Math.round(e.value / 60)} min`}
-                  </span>
-                  <button onClick={() => remove(e.id)} className="text-neutral-400 hover:text-red-400" title="Quitar">
-                    ✕
-                  </button>
-                </div>
-              ))}
+      {open &&
+        coords &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            style={{ position: "fixed", top: coords.top, left: coords.left }}
+            className="z-50 w-64 space-y-2 rounded-xl border border-neutral-100/10 bg-neutral-900 p-3 text-sm text-neutral-100 shadow-xl"
+          >
+            <div className="font-semibold">⏸ Pausas programadas</div>
+            {entries.length > 0 && (
+              <div className="space-y-1">
+                {entries.map((e) => (
+                  <div key={e.id} className="flex items-center justify-between gap-2 rounded-lg bg-neutral-500/10 px-2 py-1">
+                    <span className={e.triggered ? "text-neutral-500 line-through" : ""}>
+                      {e.kind === "layer" ? `Capa ${e.value}` : `A los ${Math.round(e.value / 60)} min`}
+                    </span>
+                    <button onClick={() => remove(e.id)} className="text-neutral-400 hover:text-red-400" title="Quitar">
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-1.5">
+              <select
+                value={kind}
+                onChange={(e) => setKind(e.target.value as "layer" | "time")}
+                className="rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
+              >
+                <option value="layer">Capa</option>
+                <option value="time">Minuto</option>
+              </select>
+              <input
+                type="number"
+                min={1}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder={kind === "layer" ? (currLayer ? `> ${currLayer}` : "nº capa") : "minutos"}
+                className="w-16 min-w-0 rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
+              />
+              <button
+                onClick={add}
+                disabled={busy}
+                className="flex-1 rounded-lg bg-[var(--accent-500)] text-xs font-medium text-white disabled:opacity-60"
+              >
+                + Añadir
+              </button>
             </div>
-          )}
-          <div className="flex gap-1.5">
-            <select
-              value={kind}
-              onChange={(e) => setKind(e.target.value as "layer" | "time")}
-              className="rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
-            >
-              <option value="layer">Capa</option>
-              <option value="time">Minuto</option>
-            </select>
-            <input
-              type="number"
-              min={1}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder={kind === "layer" ? (currLayer ? `> ${currLayer}` : "nº capa") : "minutos"}
-              className="w-16 min-w-0 rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
-            />
-            <button
-              onClick={add}
-              disabled={busy}
-              className="flex-1 rounded-lg bg-[var(--accent-500)] text-xs font-medium text-white disabled:opacity-60"
-            >
-              + Añadir
-            </button>
-          </div>
-          {error && <p className="text-xs text-red-400">{error}</p>}
-        </div>
-      )}
-    </div>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+          </div>,
+          getPopoverPortalRoot(),
+        )}
+    </>
   );
 }
 
