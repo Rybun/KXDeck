@@ -11,6 +11,7 @@ import { PrintRenderFlat } from "../components/PrintRenderFlat";
 import { usePrintRender3D } from "../hooks/usePrintRender3D";
 import { usePrintRender2D } from "../hooks/usePrintRender2D";
 import { Spool } from "../components/Spool";
+import { parseUsedFilamentChannels } from "../lib/filamentChannels";
 import { ACCENT_PRESETS, DEFAULT_ACCENT, applyAccent } from "../lib/accent";
 import { useAccent } from "../hooks/useAccent";
 import { Check, Copy, Maximize2, Minimize2, RefreshCw } from "lucide-react";
@@ -87,6 +88,17 @@ let setCamGcodeAvailable: ((v: boolean) => void) | null = null;
 // de modulo en vez de una prop.
 let camGcodeSetHighlightTool: ((tool: number | null) => void) | null = null;
 
+// Misma idea que setCamGcodeAvailable, pero en la direccion inversa
+// (informa, no ordena): que canales de filamento pide DE VERDAD el gcode de
+// esta impresion (parseUsedFilamentChannels, la misma fuente que ya usa
+// GcodeViewerCore para su leyenda "Filamento"), no simplemente que ranuras
+// tiene cargadas el AMS ahora mismo. Lo consume patchCameraFilamentStrip
+// para atenuar en gris las bobinas que esta impresion no va a tocar. null
+// significa "no se sabe todavia" (sin impresion activa, o sin resolver
+// aun) -- nunca "ninguna se usa", para no apagar de golpe toda la tira
+// mientras carga.
+let setCamGcodeUsedTools: ((tools: Set<number> | null) => void) | null = null;
+
 /** Igual que la resolucion de fileId de CameraGcodePanel.tsx, sin la parte
  * de pestana de camara (aqui sobra: comparte tarjeta con la camara NATIVA
  * de KX-Bridge, ver patchCameraGcodeToggle()). */
@@ -94,6 +106,7 @@ function CameraGcodeViewer() {
   const { data } = useKxState();
   const hasActivePrint = Boolean(data?.job.file.name) && Boolean(data?.state.flags.printing);
   const [fileId, setFileId] = useState<string | null>(null);
+  const [usedTools, setUsedTools] = useState<Set<number> | null>(null);
   const [highlightTool, setHighlightTool] = useState<number | null>(null);
 
   useEffect(() => {
@@ -106,13 +119,21 @@ function CameraGcodeViewer() {
   useEffect(() => {
     if (!hasActivePrint || !data) {
       setFileId(null);
+      setUsedTools(null);
       return;
     }
     apiGet<{ files: KxFileEntry[] }>("/api/kxdeck/files").then((d) => {
       const entry = d.files.find((f) => f.filename === data.job.file.name);
       setFileId(entry?.id ?? null);
+      setUsedTools(
+        entry ? new Set(parseUsedFilamentChannels(entry.gcode_filaments).map((c) => c.slot_index)) : null,
+      );
     });
   }, [hasActivePrint, data?.job.file.name]);
+
+  useEffect(() => {
+    setCamGcodeUsedTools?.(usedTools);
+  }, [usedTools]);
 
   const available = hasActivePrint && Boolean(fileId);
   useEffect(() => {
@@ -1010,11 +1031,26 @@ function patchNativeFilamentIcons() {
  *
  * Al pasar el raton por una bobina, si el visor de gcode de al lado esta
  * visible, resalta ahi el trazado de ese canal (ver camGcodeSetHighlightTool,
- * junto a CameraGcodeViewer). */
+ * junto a CameraGcodeViewer).
+ *
+ * Los canales que la impresion EN CURSO no va a usar (ver setCamGcodeUsedTools,
+ * junto a CameraGcodeViewer -- que gcode_filaments diga is_used, no si el
+ * AMS tiene o no filamento fisico ahi) se quedan en gris/"no disponible":
+ * grayscale + opacidad reducida, sin halo ni hover -- una ranura con
+ * filamento cargado pero que este trabajo no toca no debe verse igual de
+ * "en juego" que las que si. usedTools empieza en null (no se sabe todavia,
+ * o sin impresion) -- en ese caso ninguna bobina se atenua, nunca se apaga
+ * la tira entera solo por no haber cargado el dato aun. */
 function patchCameraFilamentStrip() {
   const root = document.getElementById("kxd-cam-filament-root");
   const amsEl = document.getElementById("ams-slots");
   if (!root || !amsEl) return;
+
+  let usedTools: Set<number> | null = null;
+  setCamGcodeUsedTools = (tools) => {
+    usedTools = tools;
+    paint();
+  };
 
   function paint() {
     const slots = Array.from(amsEl!.querySelectorAll<HTMLElement>(".ams-slot:not(.ams-slot-bridge)"));
@@ -1043,6 +1079,11 @@ function patchCameraFilamentStrip() {
     slots.forEach((slot, i) => {
       const svg = root!.children[i] as SVGElement | undefined;
       if (!svg) return;
+
+      const unavailable = usedTools != null && !usedTools.has(i);
+      svg.style.filter = unavailable ? "grayscale(1)" : "";
+      svg.style.opacity = unavailable ? "0.4" : "1";
+      if (unavailable) return;
 
       // Al pasar el raton por una bobina, si el visor de gcode esta VISIBLE
       // ahora mismo (compartiendo hueco con la camara, ver
