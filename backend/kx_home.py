@@ -232,15 +232,22 @@ async def h_home(request):
             "marcador de Ajustes -> Integrationen no encontrado: sin notificaciones ahi",
         )
 
-        # Marcador vacio justo antes de #cam-wrap: el propio bundle de
-        # widgets se encarga (en JS, no aqui) de mover #cam-wrap junto a el
-        # dentro de una fila comun, para que el visor de gcode comparta
-        # tarjeta con la camara (lado a lado si cabe, con pestañas si no).
+        # Dos marcadores vacios justo antes de #cam-wrap (el propio bundle de
+        # widgets se encarga de rellenarlos en JS, no aqui):
+        # - kxd-cam-filament-root: tira de bobinas de filamento, entre el
+        #   titulo y el video (ver patchCameraFilamentStrip en entry.tsx).
+        # - kxd-cam-gcode-root: mueve #cam-wrap junto a el dentro de una fila
+        #   comun, para que el visor de gcode comparta tarjeta con la camara
+        #   (lado a lado si cabe, con pestañas si no).
         # Se hace en JS y no con string-matching aqui porque #cam-wrap
         # contiene divs anidados (placeholder, overlay...) y encontrar SU
         # cierre exacto por texto seria fragil.
         if _CAM_MARKER in html:
-            html = html.replace(_CAM_MARKER, '<div id="kxd-cam-gcode-root"></div>' + _CAM_MARKER, 1)
+            html = html.replace(
+                _CAM_MARKER,
+                '<div id="kxd-cam-filament-root"></div><div id="kxd-cam-gcode-root"></div>' + _CAM_MARKER,
+                1,
+            )
         else:
             log.warning("'#cam-wrap' no encontrado: sin visor de gcode junto a la camara")
 

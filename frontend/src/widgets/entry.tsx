@@ -971,6 +971,74 @@ function patchNativeFilamentIcons() {
   new MutationObserver(patchAll).observe(container, { childList: true, subtree: true });
 }
 
+/** Tira de bobinas pequeñas entre el titulo y el video de la tarjeta de
+ * Camara (#kxd-cam-filament-root, marcador insertado en kx_home.py justo
+ * antes de #kxd-cam-gcode-root/#cam-wrap) -- mismo dato que la tarjeta de
+ * Filamento (#ams-slots) y el mismo componente <Spool> que
+ * patchNativeFilamentIcons, para ver de un vistazo que carrete esta
+ * alimentando la impresion sin cambiar de tarjeta.
+ *
+ * Fuera de React, igual que patchNativeFilamentIcons (a diferencia de
+ * HaLightToggles): reutiliza animateThreadBelly/SPOOL_SPIN_MS tal cual, que
+ * leen/escriben el DOM real directamente, no estado de React. Tambien sin
+ * shadow DOM por lo mismo -- la animacion de la rueda depende del
+ * @keyframes global que injectSpoolKeyframes() pone en <head>, y un shadow
+ * root no lo veria sin repetirlo ahi dentro tambien.
+ *
+ * #ams-slots se reescribe entero en cada sondeo de KX-Bridge (igual que en
+ * patchNativeFilamentIcons) -- por eso esto tambien observa por
+ * MutationObserver en vez de pintar una vez. Ignora la ranura-puente
+ * (.ams-slot-bridge, el hueco "ACE" sin color/estado propios) y, si no hay
+ * ningun slot todavia (impresora sin AMS o sin datos), deja el hueco vacio
+ * en vez de mostrar una tira sin nada dentro. */
+function patchCameraFilamentStrip() {
+  const root = document.getElementById("kxd-cam-filament-root");
+  const amsEl = document.getElementById("ams-slots");
+  if (!root || !amsEl) return;
+
+  function paint() {
+    const slots = Array.from(amsEl!.querySelectorAll<HTMLElement>(".ams-slot:not(.ams-slot-bridge)"));
+    if (slots.length === 0) {
+      root!.replaceChildren();
+      return;
+    }
+
+    root!.style.display = "flex";
+    root!.style.alignItems = "center";
+    root!.style.gap = "8px";
+    root!.style.marginBottom = "10px";
+    root!.innerHTML = slots
+      .map((slot) => {
+        const empty = slot.classList.contains("empty");
+        const active = slot.classList.contains("loaded");
+        const raw = slot.style.getPropertyValue("--slot-color") || "";
+        const rgb = raw.match(/\d+/g);
+        const hex = rgb
+          ? "#" + rgb.slice(0, 3).map((n) => Number(n).toString(16).padStart(2, "0")).join("")
+          : "#888888";
+        return renderToStaticMarkup(<Spool color={hex} size={26} active={active} empty={empty} />);
+      })
+      .join("");
+
+    slots.forEach((slot, i) => {
+      if (!slot.classList.contains("loaded")) return;
+      const svg = root!.children[i];
+      const wheel = svg?.querySelector<HTMLElement>(".spool-wheel");
+      if (wheel) {
+        const now = Date.now();
+        const offset = (i * SPOOL_SPIN_MS) / 6;
+        const phase = (((now - offset) % SPOOL_SPIN_MS) + SPOOL_SPIN_MS) % SPOOL_SPIN_MS;
+        wheel.style.animationDelay = `-${phase / 1000}s`;
+      }
+      const thread = svg?.querySelector<SVGPathElement>(".spool-thread");
+      if (thread) animateThreadBelly(thread, i);
+    });
+  }
+
+  paint();
+  new MutationObserver(paint).observe(amsEl, { childList: true, subtree: true });
+}
+
 /** La tarjeta PROGRESO tiene, ademas, filas que KX-Bridge oculta con
  * display:none mientras no hay impresion activa (p.ej. #d-slicer-row, el
  * tiempo estimado del slicer -- ver applyState() en su propio JS) y
@@ -1824,6 +1892,7 @@ function patchHeaderMobileMenu() {
 const FEATURE_DEFS = [
   { key: "cameraGcode", label: "Cámara + visor GCode combinados" },
   { key: "filamentIcons", label: "Bobinas animadas en la tarjeta de filamento" },
+  { key: "cameraFilamentStrip", label: "Bobinas de filamento junto a la cámara" },
   { key: "sidebarCollapse", label: "Botón de colapsar menú lateral" },
   { key: "headerMobileMenu", label: "Menú hamburguesa en móvil" },
   { key: "filamentDialogPreview", label: "Vista previa 3D al preparar una impresión" },
@@ -1957,6 +2026,7 @@ async function mount() {
   if (isFeatureEnabled("sidebarCollapse")) patchSidebarCollapse();
   if (isFeatureEnabled("headerMobileMenu")) patchHeaderMobileMenu();
   if (isFeatureEnabled("filamentIcons")) patchNativeFilamentIcons();
+  if (isFeatureEnabled("cameraFilamentStrip")) patchCameraFilamentStrip();
   patchGrowingCard("card-progress");
   patchGrowingCard("card-temps");
   if (isFeatureEnabled("filamentDialogPreview")) patchFilamentDialogPreview();
