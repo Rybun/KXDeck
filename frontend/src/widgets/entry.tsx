@@ -80,6 +80,13 @@ function mountShadowRoot(container: HTMLElement): HTMLElement {
 // KX-Bridge, que vive fuera de este arbol de React.
 let setCamGcodeAvailable: ((v: boolean) => void) | null = null;
 
+// Puente identico en espiritu a fdPreviewSetHighlightTool (ver
+// FilamentDialogPreview mas abajo): quien dispara el resaltado es codigo
+// fuera de este arbol (hover sobre las bobinas de patchCameraFilamentStrip,
+// puro DOM), no este componente -- asi que se escribe/lee via una variable
+// de modulo en vez de una prop.
+let camGcodeSetHighlightTool: ((tool: number | null) => void) | null = null;
+
 /** Igual que la resolucion de fileId de CameraGcodePanel.tsx, sin la parte
  * de pestana de camara (aqui sobra: comparte tarjeta con la camara NATIVA
  * de KX-Bridge, ver patchCameraGcodeToggle()). */
@@ -87,6 +94,14 @@ function CameraGcodeViewer() {
   const { data } = useKxState();
   const hasActivePrint = Boolean(data?.job.file.name) && Boolean(data?.state.flags.printing);
   const [fileId, setFileId] = useState<string | null>(null);
+  const [highlightTool, setHighlightTool] = useState<number | null>(null);
+
+  useEffect(() => {
+    camGcodeSetHighlightTool = setHighlightTool;
+    return () => {
+      camGcodeSetHighlightTool = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!hasActivePrint || !data) {
@@ -111,6 +126,7 @@ function CameraGcodeViewer() {
       compact
       live
       liveLayer={data.kx.curr_layer as number}
+      highlightTool={highlightTool}
       // Piezas ya saltadas de ESTA impresion (ver SkipObjectsPanel.tsx,
       // mismo campo) -- "gray" en vez del "fade" (casi invisible) que usa
       // Vista previa: aqui el salto ya es un hecho consumado, no una
@@ -990,7 +1006,11 @@ function patchNativeFilamentIcons() {
  * MutationObserver en vez de pintar una vez. Ignora la ranura-puente
  * (.ams-slot-bridge, el hueco "ACE" sin color/estado propios) y, si no hay
  * ningun slot todavia (impresora sin AMS o sin datos), deja el hueco vacio
- * en vez de mostrar una tira sin nada dentro. */
+ * en vez de mostrar una tira sin nada dentro.
+ *
+ * Al pasar el raton por una bobina, si el visor de gcode de al lado esta
+ * visible, resalta ahi el trazado de ese canal (ver camGcodeSetHighlightTool,
+ * junto a CameraGcodeViewer). */
 function patchCameraFilamentStrip() {
   const root = document.getElementById("kxd-cam-filament-root");
   const amsEl = document.getElementById("ams-slots");
@@ -1021,21 +1041,41 @@ function patchCameraFilamentStrip() {
       .join("");
 
     slots.forEach((slot, i) => {
-      if (!slot.classList.contains("loaded")) return;
       const svg = root!.children[i] as SVGElement | undefined;
+      if (!svg) return;
+
+      // Al pasar el raton por una bobina, si el visor de gcode esta VISIBLE
+      // ahora mismo (compartiendo hueco con la camara, ver
+      // patchCameraGcodeToggle -- gcodePane pasa a display:none en el resto
+      // de casos: sin impresion activa, o pestaña "camara" seleccionada en
+      // movil), se resalta ahi el trazado de ese mismo canal -- mismo
+      // indice de slot que ya usa KX-Bridge para el color de la ranura (ver
+      // fd-slots/dataset.paint, mismo convenio que patchFilamentDialogPreview
+      // usa para su propia vista previa). El puente es camGcodeSetHighlightTool
+      // (variable de modulo, ver CameraGcodeViewer): sigue null si el visor
+      // ni siquiera esta montado (funcion cameraGcode desactivada, o sin
+      // impresion en curso), asi que la llamada es un no-op seguro.
+      svg.style.cursor = "pointer";
+      svg.addEventListener("mouseenter", () => {
+        const pane = document.getElementById("kxd-cam-gcode-pane");
+        if (pane && pane.style.display !== "none") camGcodeSetHighlightTool?.(i);
+      });
+      svg.addEventListener("mouseleave", () => camGcodeSetHighlightTool?.(null));
+
+      if (!slot.classList.contains("loaded")) return;
       // Halo con el color de acento (var(--accent), ya en document.documentElement
       // via applyAccent -- este strip vive en DOM normal, sin shadow root de
       // por medio) para que la bobina EN USO se distinga de un vistazo del
       // resto, sin depender solo del giro/hilo animado.
-      if (svg) svg.style.filter = "drop-shadow(0 0 4px var(--accent))";
-      const wheel = svg?.querySelector<HTMLElement>(".spool-wheel");
+      svg.style.filter = "drop-shadow(0 0 4px var(--accent))";
+      const wheel = svg.querySelector<HTMLElement>(".spool-wheel");
       if (wheel) {
         const now = Date.now();
         const offset = (i * SPOOL_SPIN_MS) / 6;
         const phase = (((now - offset) % SPOOL_SPIN_MS) + SPOOL_SPIN_MS) % SPOOL_SPIN_MS;
         wheel.style.animationDelay = `-${phase / 1000}s`;
       }
-      const thread = svg?.querySelector<SVGPathElement>(".spool-thread");
+      const thread = svg.querySelector<SVGPathElement>(".spool-thread");
       if (thread) animateThreadBelly(thread, i);
     });
   }
