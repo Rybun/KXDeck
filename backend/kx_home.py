@@ -27,6 +27,10 @@ _SYSTEM_MARKER = '<div class="set-group" id="setgrp-system">'
 _SETCAT_SYSTEM_MARKER = 'id="setcat-system"'
 _SETTINGS_CONTENT_MARKER = '<div class="settings-content">'
 _CAM_MARKER = '<div class="cam-wrap" id="cam-wrap">'
+# Solo el id (no el texto del boton, que KX-Bridge traduce en cliente segun
+# idioma -- ver cabecera de este fichero) para no depender de en que idioma
+# se sirvio esta respuesta en concreto.
+_PAUSE_BTN_MARKER = 'id="d-btn-pause"'
 _LOGO_OPEN = '<div class="logo">'
 _STYLE_CLOSE = "</style>"
 
@@ -250,6 +254,16 @@ async def h_home(request):
             )
         else:
             log.warning("'#cam-wrap' no encontrado: sin visor de gcode junto a la camara")
+
+        # Boton "⋮" justo despues del boton nativo de Pausa (#d-btn-pause):
+        # abre el menu de pausas programadas (ver PauseScheduleMenu en
+        # entry.tsx / PauseSchedule en kx_client.py -- ya vigiladas por
+        # tracker_loop, esto solo le faltaba interfaz).
+        html = _insert_after_closing(
+            html, _PAUSE_BTN_MARKER, "</button>",
+            '<div id="kxd-pause-menu-root" style="display:inline-block"></div>',
+            "'#d-btn-pause' no encontrado: sin menu de pausas programadas",
+        )
 
     return web.Response(
         text=html, status=status, content_type="text/html",

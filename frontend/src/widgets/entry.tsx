@@ -1,8 +1,8 @@
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { useEffect, useState } from "react";
-import { apiGet, apiPost, bootstrapApiKey, getApiKey, setApiKey } from "../api/client";
-import type { KxFileEntry } from "../api/types";
+import { useEffect, useRef, useState } from "react";
+import { apiDelete, apiGet, apiPost, bootstrapApiKey, getApiKey, setApiKey } from "../api/client";
+import type { KxFileEntry, PauseScheduleEntry } from "../api/types";
 import { useKxState } from "../hooks/useKxState";
 import { useNotificationEvents } from "../hooks/useNotificationEvents";
 import { GcodeViewerCore } from "../components/GcodeViewerCore";
@@ -1983,6 +1983,7 @@ const FEATURE_DEFS = [
   { key: "headerMobileMenu", label: "Menú hamburguesa en móvil" },
   { key: "filamentDialogPreview", label: "Vista previa 3D al preparar una impresión" },
   { key: "haLight", label: "Interruptor de luz de Home Assistant junto a la cámara" },
+  { key: "pauseSchedule", label: "Menú de pausas programadas (⋮ junto a Pausa)" },
 ] as const;
 type FeatureKey = (typeof FEATURE_DEFS)[number]["key"];
 
@@ -2082,6 +2083,158 @@ function KxDeckFeaturesCard() {
   );
 }
 
+/** Menu "⋮" junto al boton nativo de Pausa (#kxd-pause-menu-root, marcador
+ * insertado en kx_home.py justo despues de #d-btn-pause): pausas
+ * programadas por capa o por tiempo transcurrido para la impresion en
+ * curso. El backend YA las vigila (ver PauseSchedule en kx_client.py,
+ * consultada en cada vuelta de tracker_loop) desde antes de que existiera
+ * esta interfaz -- esto solo le añade una forma de programarlas/verlas/
+ * borrarlas, sin tocar esa logica.
+ *
+ * Sin prop de fileId propia: el backend ya liga la lista al fichero que
+ * este imprimiendo AHORA MISMO (ver h_kxdeck_pause_schedule_list, lee
+ * kx.filename el mismo), asi que aqui basta con no mostrar nada mientras
+ * no hay impresion -- igual que el propio boton de Pausa (#d-ctrl-btns)
+ * esta oculto en ese caso. */
+function PauseScheduleMenu() {
+  const { data } = useKxState();
+  const printing = Boolean(data?.state.flags.printing);
+  const currLayer = data?.kx.curr_layer;
+
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<PauseScheduleEntry[]>([]);
+  const [kind, setKind] = useState<"layer" | "time">("layer");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  function refresh() {
+    apiGet<{ entries: PauseScheduleEntry[] }>("/api/kxdeck/pause-schedule")
+      .then((d) => setEntries(d.entries))
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    if (open) refresh();
+  }, [open]);
+
+  // Se cierra al hacer click fuera -- mismo patron que cualquier popover
+  // suelto (no hay ningun <dialog>/backdrop nativo de KX-Bridge que
+  // reutilizar aqui, a diferencia de #filament-dialog).
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  if (!printing) return null;
+
+  async function add() {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) {
+      setError("Valor no válido.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      // El backend guarda "time" como segundos transcurridos desde el
+      // inicio de la impresion (compara contra print_duration, ver
+      // PauseSchedule.check) -- el formulario pide minutos, mas comodo de
+      // teclear, y se convierte aqui.
+      await apiPost("/api/kxdeck/pause-schedule", {
+        kind,
+        value: kind === "time" ? Math.round(n * 60) : Math.round(n),
+      });
+      setValue("");
+      refresh();
+    } catch {
+      setError("No se ha podido programar.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: number) {
+    try {
+      await apiDelete(`/api/kxdeck/pause-schedule/${id}`);
+      refresh();
+    } catch {
+      // Silencioso: si de verdad fallo, la entrada sigue en la lista tal
+      // cual estaba (refresh() no se llega a ejecutar), no hace falta mas
+      // aviso que eso.
+    }
+  }
+
+  return (
+    <div ref={menuRef} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Pausas programadas"
+        className="rounded-lg border border-neutral-500/25 bg-neutral-500/10 px-2 py-1.5 text-sm font-bold leading-none text-neutral-600 dark:text-neutral-300"
+      >
+        ⋮
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1.5 w-64 space-y-2 rounded-xl border border-neutral-100/10 bg-neutral-900 p-3 text-sm text-neutral-100 shadow-xl">
+          <div className="font-semibold">⏸ Pausas programadas</div>
+          {entries.length > 0 && (
+            <div className="space-y-1">
+              {entries.map((e) => (
+                <div key={e.id} className="flex items-center justify-between gap-2 rounded-lg bg-neutral-500/10 px-2 py-1">
+                  <span className={e.triggered ? "text-neutral-500 line-through" : ""}>
+                    {e.kind === "layer" ? `Capa ${e.value}` : `A los ${Math.round(e.value / 60)} min`}
+                  </span>
+                  <button onClick={() => remove(e.id)} className="text-neutral-400 hover:text-red-400" title="Quitar">
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-1.5">
+            <select
+              value={kind}
+              onChange={(e) => setKind(e.target.value as "layer" | "time")}
+              className="rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
+            >
+              <option value="layer">Capa</option>
+              <option value="time">Minuto</option>
+            </select>
+            <input
+              type="number"
+              min={1}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={kind === "layer" ? (currLayer ? `> ${currLayer}` : "nº capa") : "minutos"}
+              className="w-16 min-w-0 rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
+            />
+            <button
+              onClick={add}
+              disabled={busy}
+              className="flex-1 rounded-lg bg-[var(--accent-500)] text-xs font-medium text-white disabled:opacity-60"
+            >
+              + Añadir
+            </button>
+          </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function patchPauseScheduleMenu() {
+  const root = document.getElementById("kxd-pause-menu-root");
+  if (!root) return;
+  createRoot(mountShadowRoot(root)).render(<PauseScheduleMenu />);
+}
+
 function patchSettingsCards() {
   const appearance = document.getElementById("kxd-appearance-root");
   if (appearance) createRoot(mountShadowRoot(appearance)).render(<AccentSettingsCard />);
@@ -2113,6 +2266,7 @@ async function mount() {
   if (isFeatureEnabled("headerMobileMenu")) patchHeaderMobileMenu();
   if (isFeatureEnabled("filamentIcons")) patchNativeFilamentIcons();
   if (isFeatureEnabled("cameraFilamentStrip")) patchCameraFilamentStrip();
+  if (isFeatureEnabled("pauseSchedule")) patchPauseScheduleMenu();
   patchGrowingCard("card-progress");
   patchGrowingCard("card-temps");
   if (isFeatureEnabled("filamentDialogPreview")) patchFilamentDialogPreview();
