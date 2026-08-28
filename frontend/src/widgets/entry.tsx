@@ -1022,7 +1022,12 @@ function patchCameraFilamentStrip() {
 
     slots.forEach((slot, i) => {
       if (!slot.classList.contains("loaded")) return;
-      const svg = root!.children[i];
+      const svg = root!.children[i] as SVGElement | undefined;
+      // Halo con el color de acento (var(--accent), ya en document.documentElement
+      // via applyAccent -- este strip vive en DOM normal, sin shadow root de
+      // por medio) para que la bobina EN USO se distinga de un vistazo del
+      // resto, sin depender solo del giro/hilo animado.
+      if (svg) svg.style.filter = "drop-shadow(0 0 4px var(--accent))";
       const wheel = svg?.querySelector<HTMLElement>(".spool-wheel");
       if (wheel) {
         const now = Date.now();
