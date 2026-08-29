@@ -12,23 +12,28 @@ geometria el mismo. El dibujado interactivo (rotar/zoom, sombreado) lo hace
 la GPU via WebGL, que es tarea trivial incluso para millones de vertices.
 
 Solo se genera geometria para tipos de gcode que serian visibles de verdad
-en la pieza terminada — pared interna y relleno interno se descartan igual
-que soportes/purga (nunca se ven en la pieza real, y son la mayor parte del
-volumen de un gcode tipico, lo que compensa el coste extra de mandar
-normales por vertice frente al render de solo-lineas anterior). Los tipos
-que SI se dibujan se tratan de forma distinta segun su naturaleza (ver
-WALL_TYPES/CAP_TYPES): un contorno de perimetro (pared exterior, voladizo,
-puentes) se dibuja como pared VERTICAL; un relleno de superficie en
-zigzag/concentrico (top/bottom surface, ironing) NO se puede tratar igual
--- una pared de ancho cero por linea deja huecos entre "tablones" en vez de
-una tapa continua -- asi que se dibuja como CINTA HORIZONTAL con ancho real
-para que las lineas adyacentes se solapen.
+en la pieza terminada — pared interna y relleno interno se descartan (nunca
+se ven en la pieza real, y son la mayor parte del volumen de un gcode
+tipico, lo que compensa el coste extra de mandar normales por vertice
+frente al render de solo-lineas anterior). Los tipos que SI se dibujan se
+tratan de forma distinta segun su naturaleza (ver WALL_TYPES/CAP_TYPES/
+SUPPORT_TYPES): un contorno de perimetro (pared exterior, voladizo,
+puentes) o un soporte se dibuja como pared VERTICAL; un relleno de
+superficie en zigzag/concentrico (top/bottom surface, ironing) NO se puede
+tratar igual -- una pared de ancho cero por linea deja huecos entre
+"tablones" en vez de una tapa continua -- asi que se dibuja como CINTA
+HORIZONTAL con ancho real para que las lineas adyacentes se solapen. Los
+soportes van en su PROPIO bucket (is_support=true en el header, ver mas
+abajo) para poder ocultarlos en el visor sin tocar el resto -- purga
+(prime tower) sigue descartada del todo, nunca se ve en la pieza real ni
+tiene sentido "mostrarla".
 
 Formato del contenedor 3D (ver tambien frontend/src/hooks/usePrintRender3D.ts,
 que es el consumidor):
   [4 bytes] longitud del header en bytes (uint32 little-endian)
   [N bytes] header UTF-8 JSON: {"bed": {...}, "objects": [...], "stride": 6,
-      "buckets": [{"object_index":0,"tool":3,"color_hex":"23A3C7","count":12345,"offset":0}, ...]}
+      "buckets": [{"object_index":0,"tool":3,"color_hex":"23A3C7","count":12345,
+          "offset":0,"is_support":false}, ...]}
   [resto] Float32Array concatenado de todos los buckets en orden del header;
       cada bucket son `count` vertices * `stride` floats (x,y,z,nx,ny,nz),
       `offset` es el byte donde empieza dentro de este bloque (no del
@@ -142,6 +147,19 @@ WALL_TYPES = {
 # ver el fondo a traves — justo el aspecto "semitransparente" reportado).
 CAP_TYPES = {
     "top surface", "bottom surface", "ironing",
+}
+
+# Soportes: excluidos por completo hasta ahora (ni WALL_TYPES ni CAP_TYPES
+# los cubria) -- el render 3D nunca los dibujaba, sea cual fuera el ajuste
+# de "ver soportes" en el visor. Se dibujan con la MISMA tecnica de pared
+# vertical que WALL_TYPES (ver el bucle mas abajo), pero en su PROPIO
+# bucket (is_support=True en la clave) para poder ocultarlos sin tocar el
+# resto -- y SIN pasar por el contorno 2D (flat_buckets/vista cenital), que
+# solo tiene sentido para el perimetro real de la pieza. Nombres
+# confirmados contra gcode real de Anycubic Slicer Next (";TYPE:Support",
+# ";TYPE:Support interface").
+SUPPORT_TYPES = {
+    "support", "support interface",
 }
 
 STRIDE = 6  # x,y,z,nx,ny,nz por vertice
@@ -821,38 +839,43 @@ def build_render_buffers(
         is_extrusion = e is not None and e > 0
         type_lower = cur_type.lower()
         is_wall = type_lower in WALL_TYPES
+        is_support = type_lower in SUPPORT_TYPES
         is_cap = type_lower in CAP_TYPES
 
-        if is_extrusion and (is_wall or is_cap) and x is not None and y is not None and z is not None:
+        if is_extrusion and (is_wall or is_support or is_cap) and x is not None and y is not None and z is not None:
             dx = nx - x
             dy = ny - y
             seg_len = math.hypot(dx, dy)
             if seg_len > 1e-6:
-                key = (cur_object, cur_tool)
+                key = (cur_object, cur_tool, is_support)
                 arr = buckets.get(key)
                 if arr is None:
                     arr = array.array("f")
                     buckets[key] = arr
 
-                if is_wall:
-                    # 2D (vista cenital): solo pared exterior forma ya un
-                    # contorno cerrado util. Se continua el loop en curso de
-                    # este bucket si el punto de arranque de este segmento
-                    # coincide con donde acabo el anterior Y sigue en la
-                    # misma capa (z) -- cualquier salto (objeto/color
-                    # distinto, capa distinta, o un hueco de por medio)
-                    # cierra el loop acumulado y empieza uno nuevo.
-                    key2d = (cur_object, cur_tool)
-                    st2d = flat_open.get(key2d)
-                    if st2d is not None and st2d["z"] == z and st2d["last"] == (x, y):
-                        st2d["loop"].extend((nx, ny, nz))
-                        st2d["last"] = (nx, ny)
-                    else:
-                        _flat_close(key2d)
-                        flat_open[key2d] = {
-                            "z": z, "last": (nx, ny), "lh": cur_layer_height,
-                            "loop": array.array("f", (x, y, z, nx, ny, nz)),
-                        }
+                if is_wall or is_support:
+                    if is_wall:
+                        # 2D (vista cenital): solo pared exterior forma ya un
+                        # contorno cerrado util. Se continua el loop en curso
+                        # de este bucket si el punto de arranque de este
+                        # segmento coincide con donde acabo el anterior Y
+                        # sigue en la misma capa (z) -- cualquier salto
+                        # (objeto/color distinto, capa distinta, o un hueco
+                        # de por medio) cierra el loop acumulado y empieza
+                        # uno nuevo. Los soportes (is_support) NUNCA pasan
+                        # por aqui -- no tienen sentido en el contorno 2D
+                        # cenital, solo en 3D.
+                        key2d = (cur_object, cur_tool)
+                        st2d = flat_open.get(key2d)
+                        if st2d is not None and st2d["z"] == z and st2d["last"] == (x, y):
+                            st2d["loop"].extend((nx, ny, nz))
+                            st2d["last"] = (nx, ny)
+                        else:
+                            _flat_close(key2d)
+                            flat_open[key2d] = {
+                                "z": z, "last": (nx, ny), "lh": cur_layer_height,
+                                "loop": array.array("f", (x, y, z, nx, ny, nz)),
+                            }
 
                     # Pared vertical: de z-altura_de_capa a z (altura EXACTA
                     # de esta capa, no una nominal fija -- ver ;HEIGHT: mas
@@ -911,7 +934,7 @@ def build_render_buffers(
     bucket_meta = []
     data_parts = []
     byte_offset = 0
-    for (obj_idx, tool), arr in buckets.items():
+    for (obj_idx, tool, bucket_is_support), arr in buckets.items():
         color = _tool_color(tool, tool_colors)
         count = len(arr) // STRIDE
         bucket_meta.append({
@@ -920,6 +943,7 @@ def build_render_buffers(
             "color_hex": color.lstrip("#"),
             "count": count,
             "offset": byte_offset,
+            "is_support": bucket_is_support,
         })
         raw_bytes = arr.tobytes()
         data_parts.append(raw_bytes)

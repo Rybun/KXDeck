@@ -11,6 +11,11 @@ export interface RenderBucket {
   color_hex: string;
   vertexData: Float32Array;
   count: number;
+  // true si este bucket es geometria de soporte (ver SUPPORT_TYPES en
+  // backend/gcode_render.py) -- en su propio bucket, separado de la pieza
+  // real, precisamente para poder ocultarla (ver PrintRenderScene::
+  // showSupports) sin tocar el resto.
+  is_support: boolean;
 }
 
 export interface RenderData3D {
@@ -26,6 +31,7 @@ interface BucketHeader {
   color_hex: string;
   count: number;
   offset: number;
+  is_support: boolean;
 }
 
 /** Parsea el contenedor binario de GET /api/kxdeck/files/{id}/render (ver
@@ -56,6 +62,11 @@ async function fetchRender(fileId: string): Promise<RenderData3D> {
     color_hex: b.color_hex,
     vertexData: new Float32Array(buf, dataStart + b.offset, b.count * header.stride),
     count: b.count,
+    // Ficheros ya renderizados por un backend anterior a is_support (el
+    // propio RENDER_CACHE_VERSION ya invalida esa cache, pero por si un
+    // binario viejo llegase a colarse igual): sin el campo, "false" es lo
+    // unico razonable (esta version anterior nunca dibujaba soportes).
+    is_support: b.is_support ?? false,
   }));
 
   return { bed: header.bed, objects: header.objects, stride: header.stride, buckets };

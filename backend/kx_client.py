@@ -44,7 +44,7 @@ from gcode_render import build_render_buffers
 # logica en gcode_render.py (como los arreglos de huecos/tapa/sombreado de
 # esta misma sesion) no se sirve nunca por accidente desde una cache vieja
 # con un formato o resultado distinto.
-RENDER_CACHE_VERSION = 8
+RENDER_CACHE_VERSION = 9
 
 # Detecta lineas "Tn" (cambio de herramienta/color) durante el mismo barrido
 # de bytes que ya localiza los marcadores de capa en layer_offsets, para

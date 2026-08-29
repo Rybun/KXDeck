@@ -97,6 +97,7 @@ export function PrintRenderScene({
   occluderRect = null,
   ghostUnprinted = false,
   printedHeightMm = null,
+  showSupports = false,
 }: {
   data: RenderData3D | null;
   loading?: boolean;
@@ -124,6 +125,13 @@ export function PrintRenderScene({
   // vivo (sondeo de estado) SIN reconstruir la escena entera: ver el efecto
   // dedicado mas abajo, que solo mueve dos constantes de plano.
   printedHeightMm?: number | null;
+  // Los buckets de soporte (RenderBucket.is_support, ver gcode_render.py)
+  // se saltan del todo por defecto -- mismo comportamiento que tenia este
+  // componente antes de que el backend supiera dibujarlos, para no cambiar
+  // nada en el resto de usos (Vista previa, dialogo de colores...) sin
+  // pedirlo. CameraGcode3DViewer es el unico sitio con un interruptor real
+  // para esto.
+  showSupports?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<SceneState | null>(null);
@@ -198,6 +206,11 @@ export function PrintRenderScene({
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     for (const b of data.buckets) {
+      // Los soportes ocultos no deben "reservar sitio" en el encuadre --
+      // sin este filtro, esconderlos con showSupports=false dejaba la
+      // pieza real pequeña y descentrada dentro de un encuadre pensado
+      // para una caja delimitadora que ya no se ve entera.
+      if (b.is_support && !showSupports) continue;
       const p = b.vertexData;
       for (let i = 0; i < p.length; i += stride) {
         const x = p[i], y = p[i + 1], z = p[i + 2];
@@ -237,6 +250,7 @@ export function PrintRenderScene({
       { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number }
     >();
     for (const b of data.buckets) {
+      if (b.is_support && !showSupports) continue;
       // vertexData esta intercalado (x,y,z,nx,ny,nz por vertice, stride=6):
       // un unico InterleavedBuffer sirve de vista SIN COPIA tanto para
       // "position" como para "normal".
@@ -571,12 +585,32 @@ export function PrintRenderScene({
     controls.addEventListener("change", render);
 
     const resizeObserver = new ResizeObserver(() => {
-      // El aspecto (ancho/alto) lo fija la clase CSS del contenedor y no
-      // cambia con el tamano, asi que basta con redimensionar el renderer
-      // -- no hace falta recalcular el frustum de la camara.
       const w = container.clientWidth || width;
       const h = container.clientHeight || height;
       renderer.setSize(w, h);
+      // El aspecto lo fija la clase CSS del contenedor y NORMALMENTE no
+      // cambia despues del primer montaje -- pero si el contenedor estaba
+      // display:none en ese primer momento (p.ej. una pestaña/pane
+      // inactiva, ver CameraGcode3DViewer), clientWidth/clientHeight leian
+      // 0 y "aspect" se quedaba con el valor de respaldo (width/height,
+      // pensado para el caso NO cuadrado de otros usos de este componente
+      // -- ver mas arriba) en vez del real -- la camara quedaba con un
+      // frustum equivocado para siempre (renderer.setSize no lo corrige
+      // por si solo), viendose la pieza estirada. Recalcular aqui tambien
+      // (no solo el tamaño del renderer) lo arregla la primera vez que el
+      // contenedor SI tiene un tamaño real -- el resto de las veces el
+      // aspecto ya era el correcto, asi que esto solo vuelve a escribir
+      // los mismos numeros, sin coste real.
+      const newAspect = w / h;
+      if (Number.isFinite(newAspect) && newAspect > 0) {
+        const newViewSize = Math.max(halfHeight, halfWidth / newAspect);
+        camera.top = newViewSize;
+        camera.bottom = -newViewSize;
+        camera.left = -newViewSize * newAspect;
+        camera.right = newViewSize * newAspect;
+        camera.updateProjectionMatrix();
+        if (stateRef.current) stateRef.current.frustumHalfWidth = newViewSize * newAspect;
+      }
       render();
     });
     resizeObserver.observe(container);
@@ -614,7 +648,7 @@ export function PrintRenderScene({
       container.innerHTML = "";
       stateRef.current = null;
     };
-  }, [data, quality, ghostUnprinted]);
+  }, [data, quality, ghostUnprinted, showSupports]);
 
   // Solo mueve las dos constantes de plano compartidas (ver printedPlanes
   // arriba) y vuelve a pintar UN frame -- nunca reconstruye la escena, asi

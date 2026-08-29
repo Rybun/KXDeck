@@ -189,6 +189,7 @@ function CameraGcode3DViewer() {
   const [fileId, setFileId] = useState<string | null>(null);
   const [layer, setLayer] = useState(0);
   const [followLive, setFollowLive] = useState(true);
+  const [showSupports, setShowSupports] = useState(() => localStorage.getItem("kxdeck.gcode3dSupports") === "1");
 
   useEffect(() => {
     if (!hasActivePrint || !data) {
@@ -215,13 +216,31 @@ function CameraGcode3DViewer() {
 
   if (!hasActivePrint || !fileId || !data) return null;
 
+  // Altura media por capa a partir del ritmo real hasta ahora (z_mm/curr_layer)
+  // -- pero el CORTE en si SIEMPRE se deriva de una capa (nunca de z_mm en
+  // crudo, ni siquiera en vivo): el nozzle suele levantarse por encima de la
+  // ultima capa impresa entre movimientos de desplazamiento (Z-hop), asi que
+  // z_mm momentaneamente puede leer MAS alto que lo que de verdad esta
+  // impreso -- usarlo tal cual como altura de corte dejaba casi toda la
+  // pieza mal clasificada (parpadeando entre opaca/fantasma con cada hop, y
+  // en general costando distinguir una de otra). Con esta formula, tanto en
+  // vivo como al navegar a mano el corte cae siempre en un limite de capa
+  // real.
   const zNow = data.kx.z_mm || 0;
-  const avgLayerHeight = currLayer > 0 ? zNow / currLayer : 0.2;
-  const printedHeightMm = followLive ? zNow : (layer + 1) * avgLayerHeight;
+  const avgLayerHeight = currLayer > 0 && zNow > 0 ? zNow / currLayer : 0.2;
+  const effectiveLayer = followLive ? currLayer : layer + 1;
+  const printedHeightMm = effectiveLayer * avgLayerHeight;
 
   return (
     <div className="space-y-2">
-      <PrintRenderScene data={renderData} loading={loading} ghostUnprinted printedHeightMm={printedHeightMm} aspectClassName="aspect-square" />
+      <PrintRenderScene
+        data={renderData}
+        loading={loading}
+        ghostUnprinted
+        printedHeightMm={printedHeightMm}
+        showSupports={showSupports}
+        aspectClassName="aspect-square"
+      />
       <div className="flex items-center gap-2">
         <button
           onClick={() => setFollowLive((f) => !f)}
@@ -260,8 +279,21 @@ function CameraGcode3DViewer() {
           <ChevronRight size={14} />
         </button>
       </div>
-      <div className="text-xs text-neutral-500">
-        Capa {layer + 1} / {totalLayers} {loading && "· cargando..."}
+      <div className="flex items-center justify-between text-xs text-neutral-500">
+        <span>
+          Capa {layer + 1} / {totalLayers} {loading && "· cargando..."}
+        </span>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={showSupports}
+            onChange={(e) => {
+              setShowSupports(e.target.checked);
+              localStorage.setItem("kxdeck.gcode3dSupports", e.target.checked ? "1" : "0");
+            }}
+          />
+          Soportes
+        </label>
       </div>
     </div>
   );
