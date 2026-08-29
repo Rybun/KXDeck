@@ -2483,7 +2483,7 @@ function ScheduledPausesList() {
     const targetLayer = layer0 + 1;
     if (currLayer != null && targetLayer <= currLayer) continue;
     const { layersLeft, etaSeconds } = estimate(targetLayer, null);
-    upcoming.push({ key: `g${layer0}`, label: `Capa ${targetLayer} (gcode)`, layersLeft, etaSeconds });
+    upcoming.push({ key: `g${layer0}`, label: `Capa ${targetLayer}`, layersLeft, etaSeconds });
   }
 
   if (upcoming.length === 0) return null;
