@@ -31,13 +31,14 @@ _CAM_MARKER = '<div class="cam-wrap" id="cam-wrap">'
 # idioma -- ver cabecera de este fichero) para no depender de en que idioma
 # se sirvio esta respuesta en concreto.
 _PAUSE_BTN_MARKER = 'id="d-btn-pause"'
-# Nombre del fichero en la tarjeta Progreso -- vive justo debajo de
-# ".time-grid" (elapsed/estimado slicer/restante) y justo encima de los
-# botones de control (Pausa/Objetos/Stopp). Insertar delante de esto deja
-# la hora de fin estimada y la lista de pausas pendientes en ese mismo
-# hueco, en el orden de lectura natural: cifras de tiempo, luego fin
-# estimado, luego que pausas hay por delante, luego el nombre del fichero.
-_PROGRESS_FNAME_MARKER = 'class="fname" id="d-fname"'
+# Fila de botones de control (Pausa/Objetos/Stopp) en la tarjeta Progreso --
+# insertar justo delante deja la hora de fin estimada y la lista de pausas
+# pendientes DESPUES del nombre del fichero (#d-fname) y justo ENCIMA de
+# esos botones, no pegadas al nombre del fichero -- de lo contrario "Capa
+# 198 · en 39m" quedaba justo encima del nombre del gcode sin ningun corte
+# visual entre medias, y parecia parte de la misma fila (como si el nombre
+# del fichero fuera un dato mas de esa pausa en concreto).
+_PROGRESS_CTRL_BTNS_MARKER = 'id="d-ctrl-btns"'
 _LOGO_OPEN = '<div class="logo">'
 _STYLE_CLOSE = "</style>"
 
@@ -302,9 +303,9 @@ async def h_home(request):
         # embebidas en el gcode), en la tarjeta Progreso -- ver
         # EstimatedFinish/ScheduledPausesList en entry.tsx.
         html = _insert_before(
-            html, _PROGRESS_FNAME_MARKER,
+            html, _PROGRESS_CTRL_BTNS_MARKER,
             '<div id="kxd-eta-root"></div><div id="kxd-pause-list-root"></div>',
-            "'#d-fname' no encontrado: sin hora de fin/pausas pendientes en Progreso",
+            "'#d-ctrl-btns' no encontrado: sin hora de fin/pausas pendientes en Progreso",
         )
 
     return web.Response(
