@@ -1985,6 +1985,7 @@ const FEATURE_DEFS = [
   { key: "filamentDialogPreview", label: "Vista previa 3D al preparar una impresión" },
   { key: "haLight", label: "Interruptor de luz de Home Assistant junto a la cámara" },
   { key: "pauseSchedule", label: "Menú de pausas programadas (⋮ junto a Pausa)" },
+  { key: "progressEta", label: "Hora de fin y pausas pendientes en Progreso" },
 ] as const;
 type FeatureKey = (typeof FEATURE_DEFS)[number]["key"];
 
@@ -2348,6 +2349,185 @@ function patchPauseScheduleMenu() {
   createRoot(mountShadowRoot(root)).render(<PauseScheduleMenu />);
 }
 
+function formatDurationShort(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function formatClock(date: Date): string {
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Bloque extra en la tarjeta Progreso (#kxd-eta-root, insertado en
+ * kx_home.py justo debajo de ".time-grid" y encima del nombre del
+ * fichero): KX-Bridge ya muestra el tiempo restante como DURACION
+ * (#d-remain, "2h 14m"), pero no a que hora del reloj se traduce eso --
+ * util para saber si hace falta esperar despierto o si se puede ir a
+ * dormir. Reutiliza la clase nativa ".time-block" (sin shadow DOM, mismo
+ * motivo que HaLightToggles: verse identico a los bloques nativos de
+ * al lado, cosa que un limite de shadow root impediria). */
+function EstimatedFinish() {
+  const { data } = useKxState();
+  const printing = Boolean(data?.state.flags.printing || data?.state.flags.paused);
+  const remain = data?.kx.remain_time;
+  if (!printing || !remain || remain <= 0) return null;
+
+  return (
+    <div className="time-block" style={{ marginTop: "8px" }}>
+      <div className="time-label">Fin estimado</div>
+      <div className="time-val">{formatClock(new Date(Date.now() + remain * 1000))}</div>
+    </div>
+  );
+}
+
+/** Lista de pausas pendientes en la tarjeta Progreso (#kxd-pause-list-root,
+ * justo debajo de EstimatedFinish): une DOS fuentes distintas en una sola
+ * vista --
+ * - Programadas por el usuario (menu "⋮" junto al boton de Pausa, ver
+ *   PauseScheduleMenu) via /api/kxdeck/pause-schedule, sondeado aparte --
+ *   esa API no viaja por el websocket, y este es un montaje INDEPENDIENTE
+ *   del menu (no comparten estado), asi que hay que refrescarla aqui
+ *   tambien para que anadir/quitar una desde el menu se refleje aqui.
+ * - Embebidas en el propio gcode por el slicer (M600/M601, ver
+ *   layer_pause_points en kx_client.py) via data.gcode_pause_layers, ya en
+ *   vivo por el websocket sin peticion aparte.
+ *
+ * Para cada una se estima cuanto falta (tiempo Y capas, aunque el usuario
+ * solo haya fijado una de las dos) a partir del RITMO MEDIO de toda la
+ * impresion hasta ahora (capas/tiempo restantes totales, que KX-Bridge ya
+ * calcula) -- no hay un cronometro por capa aqui accesible desde el
+ * navegador (eso vive en LayerTracker, solo en el backend, para otra
+ * cosa); es una aproximacion igual de razonable que la que ya ensena
+ * KX-Bridge para su propio tiempo restante total. */
+function ScheduledPausesList() {
+  const { data } = useKxState();
+  const printing = Boolean(data?.state.flags.printing || data?.state.flags.paused);
+  const [entries, setEntries] = useState<PauseScheduleEntry[]>([]);
+
+  useEffect(() => {
+    if (!printing) {
+      setEntries([]);
+      return;
+    }
+    let cancelled = false;
+    function refresh() {
+      apiGet<{ entries: PauseScheduleEntry[] }>("/api/kxdeck/pause-schedule")
+        .then((d) => {
+          if (!cancelled) setEntries(d.entries);
+        })
+        .catch(() => {});
+    }
+    refresh();
+    const id = window.setInterval(refresh, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+    // data?.job.file.name en las deps: al cambiar de fichero (impresion
+    // nueva) refresca de inmediato -- el backend ya vacia la lista sola en
+    // cuanto detecta el cambio (ver PauseSchedule._ensure_file), pero sin
+    // esto aqui se veria con hasta 4s de retraso.
+  }, [printing, data?.job.file.name]);
+
+  if (!printing || !data) return null;
+
+  const currLayer = data.kx.curr_layer;
+  const totalLayers = data.kx.total_layers;
+  const remainTime = data.kx.remain_time;
+  const printDuration = data.kx.print_duration;
+  const layersRemaining = totalLayers && currLayer != null ? totalLayers - currLayer : null;
+
+  // targetLayer/targetElapsed: solo se rellena UNO de los dos segun el
+  // origen del dato (capa exacta para programadas por capa y para las de
+  // gcode; segundo absoluto de impresion para programadas por tiempo, ver
+  // PauseScheduleMenu::add) -- esta funcion deriva el OTRO por regla de
+  // tres contra el ritmo medio actual.
+  function estimate(targetLayer: number | null, targetElapsed: number | null) {
+    if (targetLayer != null && currLayer != null) {
+      const layersLeft = targetLayer - currLayer;
+      const etaSeconds =
+        layersRemaining && layersRemaining > 0 && remainTime ? (remainTime * layersLeft) / layersRemaining : null;
+      return { layersLeft, etaSeconds };
+    }
+    if (targetElapsed != null && printDuration != null) {
+      const etaSeconds = targetElapsed - printDuration;
+      const layersLeft =
+        layersRemaining && layersRemaining > 0 && remainTime && remainTime > 0
+          ? Math.round((layersRemaining * etaSeconds) / remainTime)
+          : null;
+      return { layersLeft, etaSeconds };
+    }
+    return { layersLeft: null as number | null, etaSeconds: null as number | null };
+  }
+
+  const upcoming: { key: string; label: string; layersLeft: number | null; etaSeconds: number | null }[] = [];
+
+  for (const e of entries) {
+    if (e.triggered) continue;
+    const { layersLeft, etaSeconds } = e.kind === "layer" ? estimate(e.value, null) : estimate(null, e.value);
+    if (etaSeconds != null && etaSeconds <= 0) continue; // a punto de saltar / ya deberia haber saltado
+    upcoming.push({
+      key: `s${e.id}`,
+      label: e.kind === "layer" ? `Capa ${e.value}` : `Minuto ${Math.round(e.value / 60)}`,
+      layersLeft,
+      etaSeconds,
+    });
+  }
+
+  for (const layer0 of data.gcode_pause_layers) {
+    // layer_pause_points() (backend) es 0-based sobre el mismo indice que
+    // offsets/layer_offsets; curr_layer/total_layers son 1-based (mismo
+    // convenio que job_payload:: idx = curr_layer - 1) -- de ahi el +1.
+    const targetLayer = layer0 + 1;
+    if (currLayer != null && targetLayer <= currLayer) continue;
+    const { layersLeft, etaSeconds } = estimate(targetLayer, null);
+    upcoming.push({ key: `g${layer0}`, label: `Capa ${targetLayer} (gcode)`, layersLeft, etaSeconds });
+  }
+
+  if (upcoming.length === 0) return null;
+  upcoming.sort((a, b) => (a.etaSeconds ?? Infinity) - (b.etaSeconds ?? Infinity));
+
+  return (
+    <div style={{ marginTop: "8px" }}>
+      <div className="time-label">⏸ Próximas pausas</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "4px" }}>
+        {upcoming.map((p) => (
+          <div
+            key={p.key}
+            style={{
+              background: "var(--raised)",
+              borderRadius: "10px",
+              padding: "8px 10px",
+              fontSize: "12px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <span>{p.label}</span>
+            <span style={{ color: "var(--txt2)", textAlign: "right" }}>
+              {p.layersLeft != null && `${p.layersLeft} capas · `}
+              {p.etaSeconds != null
+                ? `en ${formatDurationShort(p.etaSeconds)} (~${formatClock(new Date(Date.now() + p.etaSeconds * 1000))})`
+                : "—"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function patchProgressEta() {
+  const etaRoot = document.getElementById("kxd-eta-root");
+  if (etaRoot) createRoot(etaRoot).render(<EstimatedFinish />);
+  const pauseListRoot = document.getElementById("kxd-pause-list-root");
+  if (pauseListRoot) createRoot(pauseListRoot).render(<ScheduledPausesList />);
+}
+
 function patchSettingsCards() {
   const appearance = document.getElementById("kxd-appearance-root");
   if (appearance) createRoot(mountShadowRoot(appearance)).render(<AccentSettingsCard />);
@@ -2380,6 +2560,7 @@ async function mount() {
   if (isFeatureEnabled("filamentIcons")) patchNativeFilamentIcons();
   if (isFeatureEnabled("cameraFilamentStrip")) patchCameraFilamentStrip();
   if (isFeatureEnabled("pauseSchedule")) patchPauseScheduleMenu();
+  if (isFeatureEnabled("progressEta")) patchProgressEta();
   patchGrowingCard("card-progress");
   patchGrowingCard("card-temps");
   if (isFeatureEnabled("filamentDialogPreview")) patchFilamentDialogPreview();

@@ -639,6 +639,7 @@ async def h_kxdeck_ws(request):
                     "job": job["job"],
                     "progress": job["progress"],
                     "skip": skip,
+                    "gcode_pause_layers": job.get("kxd_pause_layers", []),
                     "ha_lights": [
                         {"id": light["id"], "label": light["label"], "on": ha_states.get(light["id"])}
                         for light in ha_settings["lights"]

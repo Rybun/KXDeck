@@ -97,6 +97,12 @@ export interface KxDeckWsMessage {
   progress: JobProgress;
   skip: SkipState | null;
   ha_lights: HaLightState[];
+  // Capas (0-based) con una pausa EMBEBIDA en el propio gcode (M600/M601,
+  // ver KxFiles.layer_pause_points en kx_client.py) -- distintas de las
+  // pausas programadas por KXDeck (PauseScheduleEntry, mas abajo). []
+  // mientras el indexado de capas del fichero en curso no ha terminado
+  // todavia, o si de verdad no trae ninguna.
+  gcode_pause_layers: number[];
 }
 
 export interface FileObjectsInfo {

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import bisect
 import datetime
 import json
 import os
@@ -54,6 +55,16 @@ RENDER_CACHE_VERSION = 8
 # como en las bandejas de un solo color/canal), el resaltado del mapeo de
 # colores nunca encontraba coincidencia salvo en la mismisima capa 0.
 _TOOL_RE = re.compile(rb"(?:\A|\n)[ \t]*T(\d{1,3})[ \t]*(?:;[^\r\n]*)?(?=\r?\n|\Z)")
+
+# Pausa insertada por el propio slicer (Anycubic Slicer Next: "Añadir pausa"
+# / gcode personalizado en una capa concreta usa M600, documentado
+# oficialmente para esta familia de impresoras; M601 aparece como variante
+# del mismo comando) -- distinta de las pausas programadas por KXDeck
+# (PauseSchedule mas abajo, que nunca tocan el propio fichero). El grupo
+# captura solo "M600"/"M601" (no la linea entera, que puede traer
+# parametros/comentario) para que start(1) de directamente el offset del
+# comando, igual que _TOOL_RE con el numero de herramienta.
+_PAUSE_RE = re.compile(rb"(?:\A|\n)[ \t]*(M60[01])\b[^\r\n]*")
 
 
 def _render_cache_paths(file_id):
@@ -235,6 +246,7 @@ class KxFiles:
         self._analysis = {}
         self._layers = {}
         self._layer_tools = {}
+        self._layer_pauses = {}
         self._layer_locks = {}
         # Los renders 3D/2D en si NO se guardan en RAM (ver
         # _render_cache_paths/_render_both) -- solo los locks, para que dos
@@ -394,6 +406,13 @@ class KxFiles:
             tool_events = []
             carry_tool = b""
             last_tool_pos = -1
+            # Mismo patron que el barrido de herramientas, pero para pausas
+            # embebidas por el slicer (_PAUSE_RE) -- offsets de bytes, no
+            # capa todavia (se resuelve mas abajo, cuando ya se conocen
+            # TODOS los limites de capa, via bisect).
+            pause_events = []
+            carry_pause = b""
+            last_pause_pos = -1
             try:
                 async with self.session.get(
                     f"{KX_URL}/kx/files/{file_id}/download",
@@ -426,6 +445,16 @@ class KxFiles:
                             tool_events.append((abs_pos, int(m.group(1))))
                         carry_tool = buf_tool[-32:]
 
+                        buf_pause = carry_pause + chunk
+                        base_pause = pos - len(carry_pause)
+                        for m in _PAUSE_RE.finditer(buf_pause):
+                            abs_pos = base_pause + m.start(1)
+                            if abs_pos <= last_pause_pos:
+                                continue
+                            last_pause_pos = abs_pos
+                            pause_events.append(abs_pos)
+                        carry_pause = buf_pause[-32:]
+
                         pos += len(chunk)
             except Exception as exc:
                 log.warning("indexado %s error: %s", file_id, exc)
@@ -441,11 +470,20 @@ class KxFiles:
                     ti += 1
                 tool_at_offset.append(cur_tool)
 
+            # Offset de bytes -> indice de capa (0-based, mismo indice que
+            # "offsets"): la capa a la que pertenece un offset es la ULTIMA
+            # cuyo propio offset de inicio no lo supera -- bisect_right da
+            # exactamente esa posicion de insercion. set() por si dos M600
+            # seguidos (p.ej. M600 + M601) cayeran en la misma capa.
+            pause_layers = sorted({max(0, bisect.bisect_right(offsets, off) - 1) for off in pause_events}) if offsets else []
+
             self._layers[file_id] = offsets
             self._layer_tools[file_id] = tool_at_offset
+            self._layer_pauses[file_id] = pause_layers
             log.info(
-                "indexado %s: %s capas en %.1fs",
+                "indexado %s: %s capas en %.1fs%s",
                 entry.get("filename"), len(offsets), time.monotonic() - started,
+                f", {len(pause_layers)} pausa(s) de gcode" if pause_layers else "",
             )
             return offsets
 
@@ -455,6 +493,13 @@ class KxFiles:
         rellena como efecto secundario de layer_offsets(), llamar despues de
         esperar a esa funcion."""
         return self._layer_tools.get(file_id) or []
+
+    def layer_pause_points(self, file_id):
+        """Capas (0-based) donde el propio gcode trae una pausa embebida
+        (M600/M601, ver _PAUSE_RE) -- distintas de las pausas programadas
+        por KXDeck. Solo cache, igual que layer_start_tools; [] tanto si
+        el fichero aun no se ha indexado como si no tiene ninguna."""
+        return self._layer_pauses.get(file_id) or []
 
     def _tool_colors_for(self, entry):
         """slot_index -> color_hex de los paints REALMENTE usados. Misma
@@ -736,11 +781,22 @@ class LayerTracker:
         return max(0.0, min((time.monotonic() - self._layer_start) / avg, 0.99))
 
 
+_PAUSE_SCHEDULE_DATA_DIR = os.environ.get("KXDECK_DATA_DIR", "/app/data")
+_PAUSE_SCHEDULE_PATH = os.path.join(_PAUSE_SCHEDULE_DATA_DIR, "pause_schedule.json")
+
+
 class PauseSchedule:
     """Pausas programadas (por capa o por tiempo transcurrido) para la
-    impresion activa. En memoria, ligada al fichero en curso -- se vacia
-    sola en cuanto cambia el fichero que esta imprimiendo (igual que
-    LayerTracker), y con reset() explicito al cancelar.
+    impresion activa. Ligada al fichero en curso -- se vacia sola en cuanto
+    cambia el fichero que esta imprimiendo (igual que LayerTracker), y con
+    reset() explicito al cancelar.
+
+    Persistida en disco (pause_schedule.json, mismo patron que
+    general_settings.py/ha_settings.py -- volumen ./data ya montado en
+    docker-compose.yml) porque, a diferencia de LayerTracker, esto SI son
+    datos que el usuario ha introducido a mano: perderlos en cualquier
+    reinicio del contenedor (un redeploy, un crash) seria tirar trabajo
+    suyo, no solo un cache que se puede recalcular solo.
 
     check() es la unica que muta el estado "disparado" y debe llamarse solo
     desde tracker_loop (mismo patron que LayerTracker.observe()); list()/
@@ -750,11 +806,33 @@ class PauseSchedule:
         self._file = None
         self._entries = []
         self._next_id = 1
+        self._load()
+
+    def _load(self):
+        try:
+            with open(_PAUSE_SCHEDULE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        self._file = data.get("file")
+        self._entries = data.get("entries") or []
+        self._next_id = data.get("next_id") or (max((e["id"] for e in self._entries), default=0) + 1)
+
+    def _save(self):
+        os.makedirs(_PAUSE_SCHEDULE_DATA_DIR, exist_ok=True)
+        tmp_path = _PAUSE_SCHEDULE_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"file": self._file, "entries": self._entries, "next_id": self._next_id},
+                f, indent=2, ensure_ascii=False,
+            )
+        os.replace(tmp_path, _PAUSE_SCHEDULE_PATH)
 
     def _ensure_file(self, filename):
         if filename != self._file:
             self._file = filename
             self._entries = []
+            self._save()
 
     def list(self, filename):
         self._ensure_file(filename)
@@ -765,16 +843,21 @@ class PauseSchedule:
         entry = {"id": self._next_id, "kind": kind, "value": value, "triggered": False}
         self._next_id += 1
         self._entries.append(entry)
+        self._save()
         return dict(entry)
 
     def remove(self, entry_id):
         before = len(self._entries)
         self._entries = [e for e in self._entries if e["id"] != entry_id]
-        return len(self._entries) != before
+        changed = len(self._entries) != before
+        if changed:
+            self._save()
+        return changed
 
     def reset(self):
         self._file = None
         self._entries = []
+        self._save()
 
     def check(self, filename, curr_layer, elapsed_seconds):
         """Si alguna entrada pendiente ya toca, la marca disparada y la
@@ -786,8 +869,10 @@ class PauseSchedule:
                 continue
             if entry["kind"] == "layer" and curr_layer >= entry["value"]:
                 entry["triggered"] = True
+                self._save()
                 return entry
             if entry["kind"] == "time" and elapsed_seconds >= entry["value"]:
                 entry["triggered"] = True
+                self._save()
                 return entry
         return None

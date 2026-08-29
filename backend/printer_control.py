@@ -234,6 +234,13 @@ async def job_payload(request):
             "printTimeLeftOrigin": "estimate",
         },
         "state": text,
+        # Capas con una pausa EMBEBIDA en el propio gcode (M600/M601, ver
+        # KxFiles.layer_pause_points) -- solo para el websocket de KXDeck
+        # (ver h_kxdeck_ws), nunca se manda por /api/job (evita anadir un
+        # campo no-OctoPrint a esa respuesta, que tambien usa el OctoApp
+        # real). [] mientras el indexado de capas no ha terminado todavia
+        # (ensure_layer_offsets ya se disparo arriba si hacia falta).
+        "kxd_pause_layers": files.layer_pause_points(entry.get("id")) if entry else [],
     }
 
 

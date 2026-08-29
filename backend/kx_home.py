@@ -31,6 +31,13 @@ _CAM_MARKER = '<div class="cam-wrap" id="cam-wrap">'
 # idioma -- ver cabecera de este fichero) para no depender de en que idioma
 # se sirvio esta respuesta en concreto.
 _PAUSE_BTN_MARKER = 'id="d-btn-pause"'
+# Nombre del fichero en la tarjeta Progreso -- vive justo debajo de
+# ".time-grid" (elapsed/estimado slicer/restante) y justo encima de los
+# botones de control (Pausa/Objetos/Stopp). Insertar delante de esto deja
+# la hora de fin estimada y la lista de pausas pendientes en ese mismo
+# hueco, en el orden de lectura natural: cifras de tiempo, luego fin
+# estimado, luego que pausas hay por delante, luego el nombre del fichero.
+_PROGRESS_FNAME_MARKER = 'class="fname" id="d-fname"'
 _LOGO_OPEN = '<div class="logo">'
 _STYLE_CLOSE = "</style>"
 
@@ -176,6 +183,23 @@ def _insert_after(html, marker, extra, warn_msg):
     return html[:pos] + extra + html[pos:]
 
 
+def _insert_before(html, marker, extra, warn_msg):
+    """Como _insert_after, pero delante del elemento que CONTIENE a marker
+    en vez de detras -- para anadir un hermano justo ANTES de un elemento
+    entero. marker solo necesita ser un fragmento estable dentro de su
+    etiqueta de apertura (p.ej. 'class="x" id="y"', sin hacer falta que
+    incluya el "<div" ni el resto de atributos que puedan variar) -- se
+    retrocede hasta el "<" que la abre."""
+    idx = html.find(marker)
+    if idx == -1:
+        log.warning(warn_msg)
+        return html
+    tag_start = html.rfind("<", 0, idx)
+    if tag_start == -1:
+        return html
+    return html[:tag_start] + extra + html[tag_start:]
+
+
 def _insert_after_closing(html, marker, close_tag, extra, warn_msg):
     """Como _insert_after, pero inserta despues del primer close_tag que
     aparezca DETRAS de marker -- para anadir un hermano justo despues de un
@@ -272,6 +296,15 @@ async def h_home(request):
             html, _PAUSE_BTN_MARKER, "</button>",
             '<div id="kxd-pause-menu-root" style="display:inline-block"></div>',
             "'#d-btn-pause' no encontrado: sin menu de pausas programadas",
+        )
+
+        # Hora de fin estimada + lista de pausas pendientes (programadas y
+        # embebidas en el gcode), en la tarjeta Progreso -- ver
+        # EstimatedFinish/ScheduledPausesList en entry.tsx.
+        html = _insert_before(
+            html, _PROGRESS_FNAME_MARKER,
+            '<div id="kxd-eta-root"></div><div id="kxd-pause-list-root"></div>',
+            "'#d-fname' no encontrado: sin hora de fin/pausas pendientes en Progreso",
         )
 
     return web.Response(
