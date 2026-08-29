@@ -118,6 +118,15 @@ _HEAD_EXTRA = (
     # solo tiene sentido si el contenedor exterior tiene altura fija) -- el
     # sidebar, al quedar fuera de "main", deja de moverse nunca.
     "html,body{height:100vh;overflow:hidden}"
+    # El propio nav.sidebar nativo no trae overflow propio (solo
+    # flex-shrink:0) -- con el body ya sin scroll (arriba), si su contenido
+    # (lista de impresoras, botones de navegacion...) llega a ser mas alto
+    # que la ventana, antes se quedaba sin ninguna forma de llegar a lo de
+    # abajo: ni la pagina scrollea ya (a proposito, ver arriba) ni el
+    # sidebar tenia scroll propio. Se le da su propio scroll interno --
+    # nunca visible salvo que de verdad haga falta, no cambia su aspecto en
+    # el caso normal.
+    "nav.sidebar{overflow-y:auto}"
     # Ver _LOGO_BADGE: en pantallas estrechas (movil) el sidebar nativo no
     # tiene sitio para el badge sin partirlo en varias lineas -- se oculta
     # entero y se deja solo "KX-Bridge".

@@ -2137,6 +2137,13 @@ function PauseScheduleMenu() {
   const { data } = useKxState();
   const printing = Boolean(data?.state.flags.printing);
   const currLayer = data?.kx.curr_layer;
+  const totalLayers = data?.kx.total_layers;
+  // Nunca se puede programar una capa ya pasada (currLayer) ni una que la
+  // impresion no vaya a tener (totalLayers, si se conoce -- 0/undefined
+  // significa "no se sabe todavia", no "esta impresion no tiene capas": en
+  // ese caso no se limita el maximo en vez de bloquear todo por error).
+  const minLayer = (currLayer ?? 0) + 1;
+  const maxLayer = totalLayers && totalLayers > 0 ? totalLayers : undefined;
 
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
@@ -2210,17 +2217,31 @@ function PauseScheduleMenu() {
       setError("Valor no válido.");
       return;
     }
+    if (kind === "layer") {
+      if (n < minLayer) {
+        setError(currLayer != null ? `Esa capa ya se imprimió (vas por la ${currLayer}).` : "Esa capa ya se imprimió.");
+        return;
+      }
+      if (maxLayer != null && n > maxLayer) {
+        setError(`Esta impresión solo tiene ${maxLayer} capas.`);
+        return;
+      }
+    }
     setBusy(true);
     setError(null);
     try {
       // El backend guarda "time" como segundos transcurridos desde el
-      // inicio de la impresion (compara contra print_duration, ver
-      // PauseSchedule.check) -- el formulario pide minutos, mas comodo de
-      // teclear, y se convierte aqui.
-      await apiPost("/api/kxdeck/pause-schedule", {
-        kind,
-        value: kind === "time" ? Math.round(n * 60) : Math.round(n),
-      });
+      // INICIO de la impresion (compara contra print_duration, ver
+      // PauseSchedule.check) -- pero el formulario pide minutos DESDE AHORA
+      // (mas util e intuitivo que un minuto absoluto de la impresion, y es
+      // lo que de verdad pide el propio boton), asi que aqui se suma el
+      // print_duration actual antes de mandarlo: n minutos desde ahora ==
+      // (elapsed actual + n*60) segundos desde el inicio. Sin esto, pedir
+      // "en 10 minutos" con la impresion ya a los 45 minutos programaba un
+      // disparo en el segundo 600 -- que ya habia pasado hace rato -- y
+      // pausaba de inmediato en vez de esperar los 10 minutos pedidos.
+      const value_ = kind === "time" ? Math.round((data?.kx.print_duration ?? 0) + n * 60) : Math.round(n);
+      await apiPost("/api/kxdeck/pause-schedule", { kind, value: value_ });
       setValue("");
       refresh();
     } catch {
@@ -2275,30 +2296,43 @@ function PauseScheduleMenu() {
                 ))}
               </div>
             )}
-            <div className="flex gap-1.5">
+            <div className="space-y-1.5">
+              {/* En su propia fila (no encaja junto al resto sin apretujarse
+               * en las 256px del popover) -- el texto de cada opcion ya deja
+               * claro por si solo que "minutos" es DESDE AHORA, no un
+               * minuto absoluto de la impresion (ver add(), que sí lo
+               * convierte a esa cuenta absoluta para el backend). */}
               <select
                 value={kind}
-                onChange={(e) => setKind(e.target.value as "layer" | "time")}
-                className="rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
+                onChange={(e) => {
+                  setKind(e.target.value as "layer" | "time");
+                  setError(null);
+                }}
+                className="w-full rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 py-1 text-xs"
               >
-                <option value="layer">Capa</option>
-                <option value="time">Minuto</option>
+                <option value="layer">Pausar en la capa</option>
+                <option value="time">Pausar dentro de X minutos</option>
               </select>
-              <input
-                type="number"
-                min={1}
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                placeholder={kind === "layer" ? (currLayer ? `> ${currLayer}` : "nº capa") : "minutos"}
-                className="w-16 min-w-0 rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
-              />
-              <button
-                onClick={add}
-                disabled={busy}
-                className="flex-1 rounded-lg bg-[var(--accent-500)] text-xs font-medium text-white disabled:opacity-60"
-              >
-                + Añadir
-              </button>
+              <div className="flex gap-1.5">
+                <input
+                  type="number"
+                  min={kind === "layer" ? minLayer : 1}
+                  max={kind === "layer" ? maxLayer : undefined}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  placeholder={
+                    kind === "layer" ? `${minLayer}${maxLayer != null ? `–${maxLayer}` : "+"}` : "minutos"
+                  }
+                  className="w-16 min-w-0 rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 text-xs"
+                />
+                <button
+                  onClick={add}
+                  disabled={busy}
+                  className="flex-1 rounded-lg bg-[var(--accent-500)] text-xs font-medium text-white disabled:opacity-60"
+                >
+                  + Añadir
+                </button>
+              </div>
             </div>
             {error && <p className="text-xs text-red-400">{error}</p>}
           </div>,
