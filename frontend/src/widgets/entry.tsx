@@ -189,7 +189,6 @@ function CameraGcode3DViewer() {
   const [fileId, setFileId] = useState<string | null>(null);
   const [layer, setLayer] = useState(0);
   const [followLive, setFollowLive] = useState(true);
-  const [showSupports, setShowSupports] = useState(() => localStorage.getItem("kxdeck.gcode3dSupports") === "1");
 
   useEffect(() => {
     if (!hasActivePrint || !data) {
@@ -233,12 +232,17 @@ function CameraGcode3DViewer() {
 
   return (
     <div className="space-y-2">
+      {/* showSupports (PrintRenderScene) deliberadamente sin interruptor
+       * aqui todavia -- el backend que le daria datos de verdad (dibujar
+       * soportes) esta pausado por un problema real de memoria en
+       * produccion, ver el aviso grande en gcode_render.py::SUPPORT_TYPES.
+       * Sin ese trabajo hecho a conciencia, un interruptor aqui no
+       * cambiaria nada (nunca hay buckets de soporte que enseñar). */}
       <PrintRenderScene
         data={renderData}
         loading={loading}
         ghostUnprinted
         printedHeightMm={printedHeightMm}
-        showSupports={showSupports}
         aspectClassName="aspect-square"
       />
       <div className="flex items-center gap-2">
@@ -279,21 +283,8 @@ function CameraGcode3DViewer() {
           <ChevronRight size={14} />
         </button>
       </div>
-      <div className="flex items-center justify-between text-xs text-neutral-500">
-        <span>
-          Capa {layer + 1} / {totalLayers} {loading && "· cargando..."}
-        </span>
-        <label className="flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={showSupports}
-            onChange={(e) => {
-              setShowSupports(e.target.checked);
-              localStorage.setItem("kxdeck.gcode3dSupports", e.target.checked ? "1" : "0");
-            }}
-          />
-          Soportes
-        </label>
+      <div className="text-xs text-neutral-500">
+        Capa {layer + 1} / {totalLayers} {loading && "· cargando..."}
       </div>
     </div>
   );

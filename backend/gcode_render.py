@@ -149,18 +149,29 @@ CAP_TYPES = {
     "top surface", "bottom surface", "ironing",
 }
 
-# Soportes: excluidos por completo hasta ahora (ni WALL_TYPES ni CAP_TYPES
-# los cubria) -- el render 3D nunca los dibujaba, sea cual fuera el ajuste
-# de "ver soportes" en el visor. Se dibujan con la MISMA tecnica de pared
-# vertical que WALL_TYPES (ver el bucle mas abajo), pero en su PROPIO
-# bucket (is_support=True en la clave) para poder ocultarlos sin tocar el
-# resto -- y SIN pasar por el contorno 2D (flat_buckets/vista cenital), que
-# solo tiene sentido para el perimetro real de la pieza. Nombres
-# confirmados contra gcode real de Anycubic Slicer Next (";TYPE:Support",
-# ";TYPE:Support interface").
-SUPPORT_TYPES = {
-    "support", "support interface",
-}
+# Soportes: DESACTIVADO por ahora -- ver el aviso grande mas abajo antes de
+# volver a activarlo.
+#
+# Un intento de dibujarlos (misma tecnica de pared vertical que WALL_TYPES,
+# en su propio bucket is_support para poder ocultarlos) reboto en produccion:
+# el volumen de gcode de soporte de una pieza tipica es varias veces el de
+# la propia pieza (es relleno denso, no un simple contorno), y la tecnica de
+# "pared+remate" (18 floats por segmento, ver el bucle mas abajo) multiplica
+# eso todavia mas -- un bucket de soporte llego a 16.3 MILLONES de vertices
+# en un solo fichero real de la biblioteca (~390MB solo esa lista de
+# Python). Multiplicado por prewarm_loop recorriendo TODA la biblioteca sin
+# parar, el proceso murio a manos del OOM killer del sistema repetidas
+# veces por minuto (Raspberry Pi con ~20 contenedores mas compartiendo RAM)
+# -- confirmado con `dmesg`/journalctl: "Out of memory: Killed process ...
+# (python)" cada 60-90s, docker reiniciando el contenedor sin parar detras.
+#
+# Si se retoma esta idea: NO reusar la tecnica de pared+remate tal cual
+# para soportes (demasiados floats por segmento para su volumen tipico) --
+# pensar en algo mas barato (una cinta simple sin remate, un muestreo/
+# decimado del propio soporte, o generarlo bajo demanda SOLO cuando el
+# usuario active el interruptor en vez de en cada pasada de prewarm) y
+# probar contra un fichero con soportes densos de verdad antes de desplegar.
+SUPPORT_TYPES: set[str] = set()
 
 STRIDE = 6  # x,y,z,nx,ny,nz por vertice
 STRIDE_2D = 3  # x,y,z por punto acumulado (buffer interno, no va por cable)
