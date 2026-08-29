@@ -15,7 +15,7 @@ import { Spool } from "../components/Spool";
 import { parseUsedFilamentChannels } from "../lib/filamentChannels";
 import { ACCENT_PRESETS, DEFAULT_ACCENT, applyAccent } from "../lib/accent";
 import { useAccent } from "../hooks/useAccent";
-import { Check, Copy, Maximize2, Minimize2, RefreshCw } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, Maximize2, Minimize2, Pause, Play, RefreshCw } from "lucide-react";
 import widgetCss from "../index.css?inline";
 
 declare global {
@@ -160,6 +160,113 @@ function CameraGcodeViewer() {
   );
 }
 
+/** Visor "GCode 3D" junto a la camara (pestaña/pane propio, ver
+ * patchCameraGcodeToggle): mismo render 3D ya usado en Vista previa
+ * (PrintRenderScene, via usePrintRender3D -- el binario ya generado y
+ * cacheado en el servidor, sin reparsear nada por capa), pero con lo YA
+ * impreso opaco y lo que falta semi-transparente (ghostUnprinted, ver
+ * PrintRenderScene) en vez de enseñar la pieza entera de golpe -- igual
+ * que la previsualizacion de secuencia de OrcaSlicer.
+ *
+ * Resolucion de fileId duplicada a proposito de CameraGcodeViewer (mismo
+ * criterio que patchNativeFilamentIcons/patchCameraFilamentStrip en este
+ * fichero): son dos widgets independientes, cada uno con su propio ciclo
+ * de vida/montaje.
+ *
+ * Controles identicos en espiritu a GcodeViewerCore (flechas, slider,
+ * boton de seguir en vivo), pero SIN su logica de reparseo de gcode por
+ * capa -- aqui no hace falta, el modelo entero ya esta cargado de una
+ * vez; lo unico que cambia segun la capa elegida es DONDE se traza el
+ * corte opaco/fantasma. La altura Z de una capa arbitraria (al alejarse a
+ * mano de la capa en vivo) se APROXIMA a partir de la altura real actual
+ * (z_mm) y la capa actual (curr_layer) -- no hay una tabla exacta de
+ * "altura por capa" resuelta en el navegador (el indice del visor 2D solo
+ * trae offsets de bytes, no alturas), y una altura media por capa es
+ * sobrada precision para un efecto de vista previa. */
+function CameraGcode3DViewer() {
+  const { data } = useKxState();
+  const hasActivePrint = Boolean(data?.job.file.name) && Boolean(data?.state.flags.printing);
+  const [fileId, setFileId] = useState<string | null>(null);
+  const [layer, setLayer] = useState(0);
+  const [followLive, setFollowLive] = useState(true);
+
+  useEffect(() => {
+    if (!hasActivePrint || !data) {
+      setFileId(null);
+      return;
+    }
+    apiGet<{ files: KxFileEntry[] }>("/api/kxdeck/files").then((d) => {
+      const entry = d.files.find((f) => f.filename === data.job.file.name);
+      setFileId(entry?.id ?? null);
+    });
+  }, [hasActivePrint, data?.job.file.name]);
+
+  const totalLayers = data?.kx.total_layers ?? 0;
+  const currLayer = data?.kx.curr_layer ?? 0;
+
+  // Sigue la capa en vivo mientras followLive este activo -- misma logica
+  // que GcodeViewerCore (moverse a mano por el slider/flechas lo desactiva,
+  // el boton de play lo reactiva Y salta de inmediato a la capa actual).
+  useEffect(() => {
+    if (followLive) setLayer(Math.max(0, currLayer - 1));
+  }, [currLayer, followLive]);
+
+  const { data: renderData, loading } = usePrintRender3D(fileId);
+
+  if (!hasActivePrint || !fileId || !data) return null;
+
+  const zNow = data.kx.z_mm || 0;
+  const avgLayerHeight = currLayer > 0 ? zNow / currLayer : 0.2;
+  const printedHeightMm = followLive ? zNow : (layer + 1) * avgLayerHeight;
+
+  return (
+    <div className="space-y-2">
+      <PrintRenderScene data={renderData} loading={loading} ghostUnprinted printedHeightMm={printedHeightMm} aspectClassName="aspect-square" />
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setFollowLive((f) => !f)}
+          title={followLive ? "Siguiendo la impresión en vivo" : "Volver a la capa en curso"}
+          className="rounded-full bg-[var(--accent-500)]/15 p-1.5 text-[var(--accent-600)] dark:text-[var(--accent-400)]"
+        >
+          {followLive ? <Pause size={14} /> : <Play size={14} />}
+        </button>
+        <button
+          onClick={() => {
+            setFollowLive(false);
+            setLayer((l) => Math.max(0, l - 1));
+          }}
+          className="shrink-0 rounded-full border border-neutral-500/20 bg-neutral-500/15 p-1.5"
+        >
+          <ChevronLeft size={14} />
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(totalLayers - 1, 0)}
+          value={layer}
+          onChange={(e) => {
+            setFollowLive(false);
+            setLayer(Number(e.target.value));
+          }}
+          className="flex-1"
+        />
+        <button
+          onClick={() => {
+            setFollowLive(false);
+            setLayer((l) => Math.min(Math.max(totalLayers - 1, 0), l + 1));
+          }}
+          className="shrink-0 rounded-full border border-neutral-500/20 bg-neutral-500/15 p-1.5"
+        >
+          <ChevronRight size={14} />
+        </button>
+      </div>
+      <div className="text-xs text-neutral-500">
+        Capa {layer + 1} / {totalLayers} {loading && "· cargando..."}
+      </div>
+    </div>
+  );
+}
+
 /** Envuelve el <div id="cam-wrap"> nativo (moviendolo, no clonandolo --
  * conserva sus ids/onclick tal cual) en una fila junto a un hueco propio
  * para el visor de gcode, con una barra de pestañas nativa (sin React,
@@ -211,14 +318,66 @@ function patchCameraGcodeToggle() {
   // impide encoger por debajo del ancho intrinseco del <img> de la camara).
   camWrap.style.minWidth = "0";
 
-  const gcodePane = document.createElement("div");
-  gcodePane.id = "kxd-cam-gcode-pane";
+  // gcodePaneContainer es el "hueco de gcode" que ve sizeCameraRow (mismo
+  // rol que tenia la unica "gcodePane" de antes) -- por DENTRO reparte,
+  // en columna, un mini-toolbar (2D/3D + pantalla completa, solo visible
+  // en modo "split", ver kindToolbar mas abajo) y las DOS variantes de
+  // visor (gcode2dPane/gcode3dPane), de las que solo una esta visible cada
+  // vez (activeKind). align-items:stretch (por defecto en flex-column) las
+  // hace ocupar el ancho entero del contenedor sin reglas de mas.
+  const gcodePaneContainer = document.createElement("div");
+  gcodePaneContainer.id = "kxd-cam-gcode-pane";
   // flex:0 0 auto (no crece ni encoge por reparto, solo por el ancho
   // explicito que le da sizeCameraRow) + align-self:flex-start (no
   // hereda el stretch de la fila): su tamaño lo decide sizeCameraRow, no
   // el reparto de flexbox.
-  gcodePane.style.cssText = "flex:0 0 auto;min-width:0;align-self:flex-start;display:none";
-  row.appendChild(gcodePane);
+  gcodePaneContainer.style.cssText =
+    "flex:0 0 auto;min-width:0;align-self:flex-start;display:none;flex-direction:column;gap:6px";
+  row.appendChild(gcodePaneContainer);
+
+  const kindToolbar = document.createElement("div");
+  kindToolbar.id = "kxd-cam-kind-toolbar";
+  kindToolbar.style.cssText = "display:none;align-items:center;justify-content:space-between;gap:6px";
+  kindToolbar.innerHTML =
+    '<div style="display:flex;gap:4px">' +
+    '<button id="kxd-cam-kind-2d" style="padding:4px 10px;font-size:11px;border-radius:8px;border:1px solid var(--border);cursor:pointer">2D</button>' +
+    '<button id="kxd-cam-kind-3d" style="padding:4px 10px;font-size:11px;border-radius:8px;border:1px solid var(--border);cursor:pointer">3D</button>' +
+    "</div>" +
+    '<button id="kxd-cam-gcode-fs-btn" title="Pantalla completa" style="display:flex;align-items:center;justify-content:center;padding:4px 6px;border-radius:8px;border:1px solid var(--border);background:var(--raised);color:var(--txt);cursor:pointer"></button>';
+  gcodePaneContainer.appendChild(kindToolbar);
+
+  const gcode2dPane = document.createElement("div");
+  gcode2dPane.id = "kxd-cam-gcode-2d-pane";
+  gcodePaneContainer.appendChild(gcode2dPane);
+
+  const gcode3dPane = document.createElement("div");
+  gcode3dPane.id = "kxd-cam-gcode-3d-pane";
+  gcode3dPane.style.display = "none";
+  gcodePaneContainer.appendChild(gcode3dPane);
+
+  const kind2dBtn = kindToolbar.querySelector<HTMLButtonElement>("#kxd-cam-kind-2d")!;
+  const kind3dBtn = kindToolbar.querySelector<HTMLButtonElement>("#kxd-cam-kind-3d")!;
+  const gcodeFsBtn = kindToolbar.querySelector<HTMLButtonElement>("#kxd-cam-gcode-fs-btn")!;
+  injectPseudoFullscreenStyle();
+  gcodeFsBtn.innerHTML = FULLSCREEN_ICON;
+
+  // Recordado entre sesiones -- igual que la rotacion del visor en vivo
+  // (kxdeck.gcodeCamRotated): no tiene sentido volver siempre a "2D" si el
+  // usuario ya dejo claro que prefiere ver el 3D.
+  let activeKind: "2d" | "3d" = localStorage.getItem("kxdeck.camGcodeKind") === "3d" ? "3d" : "2d";
+
+  function applyActivePane() {
+    gcode2dPane.style.display = activeKind === "2d" ? "" : "none";
+    gcode3dPane.style.display = activeKind === "3d" ? "" : "none";
+  }
+  applyActivePane();
+
+  function paintKindToolbar() {
+    kind2dBtn.style.background = activeKind === "2d" ? "var(--accent)" : "var(--raised)";
+    kind2dBtn.style.color = activeKind === "2d" ? "#fff" : "var(--txt)";
+    kind3dBtn.style.background = activeKind === "3d" ? "var(--accent)" : "var(--raised)";
+    kind3dBtn.style.color = activeKind === "3d" ? "#fff" : "var(--txt)";
+  }
 
   const cameraCard = row.closest<HTMLElement>(".card");
   const gridEl = document.getElementById("dash-grid") as (HTMLElement & { gridstack?: GridStackLike }) | null;
@@ -232,8 +391,20 @@ function patchCameraGcodeToggle() {
   // cual nunca se encoge (camara sola, o modo pestañas).
   const baselineRows = item ? item.gridstackNode?.h ?? Math.round(item.getBoundingClientRect().height / cellHeight) : null;
 
-  function isCamFullscreen() {
-    return document.fullscreenElement === camWrap || camWrap.classList.contains("kxd-pseudo-fullscreen");
+  /** Fullscreen (real o "pseudo", ver togglePseudoFullscreen) de CUALQUIERA
+   * de los tres elementos que pueden estar a pantalla completa: la camara
+   * o cualquiera de los dos visores de gcode (el fullscreen del gcode
+   * apunta siempre al pane ACTIVO, ver el boton en kindToolbar). */
+  function isAnyFullscreen() {
+    const fsEl = document.fullscreenElement;
+    return (
+      fsEl === camWrap ||
+      fsEl === gcode2dPane ||
+      fsEl === gcode3dPane ||
+      camWrap.classList.contains("kxd-pseudo-fullscreen") ||
+      gcode2dPane.classList.contains("kxd-pseudo-fullscreen") ||
+      gcode3dPane.classList.contains("kxd-pseudo-fullscreen")
+    );
   }
 
   function camAspect() {
@@ -243,17 +414,19 @@ function patchCameraGcodeToggle() {
     return FALLBACK_CAM_ASPECT;
   }
 
-  /** Cuanto ocupa gcodePane fuera del propio canvas cuadrado (controles de
-   * capa/slider) -- no depende del ancho que se le acabe dando al cuadrado
-   * (los controles no cambian de alto con el ancho), asi que medirlo antes
-   * de decidir nada es seguro. El canvas vive en el shadow root que monta
-   * CameraGcodeViewer (ver mount() mas abajo) -- querySelector normal NUNCA
-   * lo encuentra (no cruza el limite de shadow DOM), lo que antes hacia
-   * creer que "extra" era el scrollHeight ENTERO. */
+  /** Cuanto ocupa gcodePaneContainer fuera del propio canvas cuadrado
+   * (mini-toolbar 2D/3D + controles de capa/slider del pane activo) -- no
+   * depende del ancho que se le acabe dando al cuadrado (ninguno de esos
+   * elementos cambia de alto con el ancho), asi que medirlo antes de
+   * decidir nada es seguro. El canvas vive en el shadow root que monta
+   * CameraGcodeViewer/CameraGcode3DViewer (ver mount() mas abajo) --
+   * querySelector normal NUNCA lo encuentra (no cruza el limite de shadow
+   * DOM), lo que antes hacia creer que "extra" era el scrollHeight ENTERO. */
   function measureGcodeExtra(): number {
-    const canvas = gcodePane.shadowRoot?.querySelector("canvas") ?? null;
+    const activePane = activeKind === "3d" ? gcode3dPane : gcode2dPane;
+    const canvas = activePane.shadowRoot?.querySelector("canvas") ?? null;
     const currentSquare = canvas ? canvas.getBoundingClientRect().width : 0;
-    return Math.max(0, gcodePane.scrollHeight - currentSquare);
+    return Math.max(0, gcodePaneContainer.scrollHeight - currentSquare);
   }
 
   /** Reparte y ajusta la fila entera, con TRES casos posibles segun que se
@@ -296,9 +469,9 @@ function patchCameraGcodeToggle() {
    *    ver growGridCardToFitContent) -- por eso es bidireccional sin mas
    *    (nunca se queda pegado a una altura de una capa anterior). */
   function sizeCameraRow() {
-    if (!grid || !item || !cameraCard || baselineRows == null || isCamFullscreen()) return;
+    if (!grid || !item || !cameraCard || baselineRows == null || isAnyFullscreen()) return;
     const currentRows = item.gridstackNode?.h ?? baselineRows;
-    const gcodeVisible = gcodePane.style.display !== "none";
+    const gcodeVisible = gcodePaneContainer.style.display !== "none";
     const camVisible = camWrap.style.display !== "none";
 
     if (!gcodeVisible) {
@@ -326,8 +499,8 @@ function patchCameraGcodeToggle() {
       if (neededRows !== currentRows) grid.update(item, { h: neededRows });
 
       const square = Math.max(80, Math.round(Math.min(rowWidth, H - extra)));
-      gcodePane.style.flex = "0 0 auto";
-      if (gcodePane.style.width !== `${square}px`) gcodePane.style.width = `${square}px`;
+      gcodePaneContainer.style.flex = "0 0 auto";
+      if (gcodePaneContainer.style.width !== `${square}px`) gcodePaneContainer.style.width = `${square}px`;
 
       // alignSelf:flex-start + alto explicito (no el "stretch" por defecto
       // de la fila): con H sin cuantizar en vez del alto real ya mas alto,
@@ -341,49 +514,82 @@ function patchCameraGcodeToggle() {
       return;
     }
 
-    // Pestaña "gcode" activa, camara oculta.
-    gcodePane.style.flex = "1 1 0";
-    gcodePane.style.width = "";
+    // Pestaña "gcode" (2D o 3D) activa, camara oculta.
+    gcodePaneContainer.style.flex = "1 1 0";
+    gcodePaneContainer.style.width = "";
     const neededRows = Math.max(baselineRows, Math.ceil((cameraCard.scrollHeight + 12) / cellHeight));
     if (neededRows !== currentRows) grid.update(item, { h: neededRows });
   }
 
-  // El contenido de gcodePane vive en un shadow root propio (mountShadowRoot
-  // mas abajo, en mount()): el visor puede tardar en resolver su fileId
-  // (async) y solo entonces ocupar su alto real -- un ResizeObserver sobre
-  // el propio host SI reacciona a eso, cruce o no limite de shadow DOM,
-  // porque mide la caja renderizada del host. Tambien sobre "row": si su
-  // ancho cambia (redimension de ventana...) hay que recalcular igual.
-  new ResizeObserver(sizeCameraRow).observe(gcodePane);
+  // El contenido de gcodePaneContainer vive en shadow roots propios
+  // (mountShadowRoot mas abajo, en mount()): el visor puede tardar en
+  // resolver su fileId (async) y solo entonces ocupar su alto real -- un
+  // ResizeObserver sobre el propio host SI reacciona a eso, cruce o no
+  // limite de shadow DOM, porque mide la caja renderizada del host.
+  // Tambien sobre "row": si su ancho cambia (redimension de ventana...)
+  // hay que recalcular igual.
+  new ResizeObserver(sizeCameraRow).observe(gcodePaneContainer);
   new ResizeObserver(sizeCameraRow).observe(row);
   // La proporcion real de la camara no se conoce hasta que el stream carga
   // su primer frame (antes se usa un valor de respaldo 16:9) -- al cargar,
   // recalcular con la proporcion definitiva.
   camImg?.addEventListener("load", sizeCameraRow);
-  // Salir de pantalla completa (real o pseudo) es la unica transicion que
-  // isCamFullscreen() ignora activamente mientras dura -- hay que forzar un
-  // recalculo justo al terminar, o la tarjeta se queda con lo ultimo que
-  // isCamFullscreen() SI dejo pasar (potencialmente nada, dejando valores
-  // obsoletos).
+  // Salir de pantalla completa (real o pseudo, de CUALQUIERA de los tres
+  // elementos) es la unica transicion que isAnyFullscreen() ignora
+  // activamente mientras dura -- hay que forzar un recalculo justo al
+  // terminar, o la tarjeta se queda con lo ultimo que isAnyFullscreen() SI
+  // dejo pasar (potencialmente nada, dejando valores obsoletos).
   let wasFullscreen = false;
   function checkFullscreenExit() {
-    const now = isCamFullscreen();
+    const now = isAnyFullscreen();
     if (wasFullscreen && !now) sizeCameraRow();
     wasFullscreen = now;
   }
   document.addEventListener("fullscreenchange", checkFullscreenExit);
-  new MutationObserver(checkFullscreenExit).observe(camWrap, { attributes: true, attributeFilter: ["class"] });
+  const fsClassObserver = new MutationObserver(checkFullscreenExit);
+  fsClassObserver.observe(camWrap, { attributes: true, attributeFilter: ["class"] });
+  fsClassObserver.observe(gcode2dPane, { attributes: true, attributeFilter: ["class"] });
+  fsClassObserver.observe(gcode3dPane, { attributes: true, attributeFilter: ["class"] });
 
+  gcodeFsBtn.onclick = () => {
+    const wrap = activeKind === "3d" ? gcode3dPane : gcode2dPane;
+    const supportsNative = document.fullscreenEnabled && typeof wrap.requestFullscreen === "function";
+    if (wrap.classList.contains("kxd-pseudo-fullscreen")) {
+      togglePseudoFullscreen(wrap, gcodeFsBtn);
+      return;
+    }
+    if (!supportsNative) {
+      togglePseudoFullscreen(wrap, gcodeFsBtn);
+      return;
+    }
+    if (!document.fullscreenElement) {
+      wrap.requestFullscreen().catch(() => togglePseudoFullscreen(wrap, gcodeFsBtn));
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  };
+  document.addEventListener("fullscreenchange", () => {
+    const wrap = activeKind === "3d" ? gcode3dPane : gcode2dPane;
+    gcodeFsBtn.innerHTML = document.fullscreenElement === wrap ? EXIT_FULLSCREEN_ICON : FULLSCREEN_ICON;
+  });
+
+  // Tres pestañas (movil/estrecho, camara sin sitio para todo a la vez):
+  // Cámara, GCode (2D) y GCode 3D -- solo una visible cada vez. En
+  // escritorio ancho (split) estas se ocultan del todo: camara y gcode
+  // (el que activeKind diga) se ven juntos, y kindToolbar es quien elige
+  // 2D/3D ahi (ver mas abajo).
   const toggleBar = document.createElement("div");
   toggleBar.id = "kxd-cam-toggle-bar";
-  toggleBar.style.cssText = "display:none;gap:6px;margin-bottom:8px";
+  toggleBar.style.cssText = "display:none;gap:6px;margin-bottom:8px;flex-wrap:wrap";
   toggleBar.innerHTML =
     '<button id="kxd-cam-tab-cam" style="padding:5px 12px;font-size:12px;border-radius:8px;border:1px solid var(--border);cursor:pointer">📷 Cámara</button>' +
-    '<button id="kxd-cam-tab-gcode" style="padding:5px 12px;font-size:12px;border-radius:8px;border:1px solid var(--border);cursor:pointer">🧩 GCode</button>';
+    '<button id="kxd-cam-tab-gcode2d" style="padding:5px 12px;font-size:12px;border-radius:8px;border:1px solid var(--border);cursor:pointer">🧩 GCode</button>' +
+    '<button id="kxd-cam-tab-gcode3d" style="padding:5px 12px;font-size:12px;border-radius:8px;border:1px solid var(--border);cursor:pointer">🧊 GCode 3D</button>';
   row.parentElement!.insertBefore(toggleBar, row);
 
   const camBtn = toggleBar.querySelector<HTMLButtonElement>("#kxd-cam-tab-cam")!;
-  const gcodeBtn = toggleBar.querySelector<HTMLButtonElement>("#kxd-cam-tab-gcode")!;
+  const gcode2dBtn = toggleBar.querySelector<HTMLButtonElement>("#kxd-cam-tab-gcode2d")!;
+  const gcode3dBtn = toggleBar.querySelector<HTMLButtonElement>("#kxd-cam-tab-gcode3d")!;
 
   let split = true;
   let activeTab: "cam" | "gcode" = "cam";
@@ -392,8 +598,10 @@ function patchCameraGcodeToggle() {
   function paintTabs() {
     camBtn.style.background = activeTab === "cam" ? "var(--accent)" : "var(--raised)";
     camBtn.style.color = activeTab === "cam" ? "#fff" : "var(--txt)";
-    gcodeBtn.style.background = activeTab === "gcode" ? "var(--accent)" : "var(--raised)";
-    gcodeBtn.style.color = activeTab === "gcode" ? "#fff" : "var(--txt)";
+    gcode2dBtn.style.background = activeTab === "gcode" && activeKind === "2d" ? "var(--accent)" : "var(--raised)";
+    gcode2dBtn.style.color = activeTab === "gcode" && activeKind === "2d" ? "#fff" : "var(--txt)";
+    gcode3dBtn.style.background = activeTab === "gcode" && activeKind === "3d" ? "var(--accent)" : "var(--raised)";
+    gcode3dBtn.style.color = activeTab === "gcode" && activeKind === "3d" ? "#fff" : "var(--txt)";
   }
 
   function layout() {
@@ -401,25 +609,31 @@ function patchCameraGcodeToggle() {
       // Sin impresion activa/gcode que enseñar: la camara ocupa toda la
       // fila, exactamente como el diseño nativo original.
       toggleBar.style.display = "none";
-      gcodePane.style.display = "none";
+      kindToolbar.style.display = "none";
+      gcodePaneContainer.style.display = "none";
       camWrap.style.display = "";
     } else if (split) {
       toggleBar.style.display = "none";
+      kindToolbar.style.display = "flex";
       camWrap.style.display = "";
-      gcodePane.style.display = "";
+      gcodePaneContainer.style.display = "flex";
+      paintKindToolbar();
     } else {
       toggleBar.style.display = "flex";
+      kindToolbar.style.display = "none";
       camWrap.style.display = activeTab === "cam" ? "" : "none";
-      gcodePane.style.display = activeTab === "gcode" ? "" : "none";
+      gcodePaneContainer.style.display = activeTab === "cam" ? "none" : "flex";
       paintTabs();
     }
+    applyActivePane();
     sizeCameraRow();
-    // gcodePane acaba de pasar de display:none a visible: si su contenido
-    // (canvas con aspect-ratio, control de capa...) todavia no habia
-    // podido calcular layout mientras estaba oculto, la primera medida
-    // sincrona puede quedarse corta -- un segundo intento tras el primer
-    // pintado normalmente ya ve el tamaño definitivo. El ResizeObserver de
-    // gcodePane sigue de respaldo para cualquier cambio posterior.
+    // gcodePaneContainer acaba de pasar de display:none a visible: si su
+    // contenido (canvas con aspect-ratio, controles de capa...) todavia no
+    // habia podido calcular layout mientras estaba oculto, la primera
+    // medida sincrona puede quedarse corta -- un segundo intento tras el
+    // primer pintado normalmente ya ve el tamaño definitivo. El
+    // ResizeObserver de gcodePaneContainer sigue de respaldo para
+    // cualquier cambio posterior.
     requestAnimationFrame(sizeCameraRow);
   }
 
@@ -427,8 +641,26 @@ function patchCameraGcodeToggle() {
     activeTab = "cam";
     layout();
   };
-  gcodeBtn.onclick = () => {
+  gcode2dBtn.onclick = () => {
     activeTab = "gcode";
+    activeKind = "2d";
+    localStorage.setItem("kxdeck.camGcodeKind", "2d");
+    layout();
+  };
+  gcode3dBtn.onclick = () => {
+    activeTab = "gcode";
+    activeKind = "3d";
+    localStorage.setItem("kxdeck.camGcodeKind", "3d");
+    layout();
+  };
+  kind2dBtn.onclick = () => {
+    activeKind = "2d";
+    localStorage.setItem("kxdeck.camGcodeKind", "2d");
+    layout();
+  };
+  kind3dBtn.onclick = () => {
+    activeKind = "3d";
+    localStorage.setItem("kxdeck.camGcodeKind", "3d");
     layout();
   };
 
@@ -493,19 +725,25 @@ function injectSpoolKeyframes() {
  * llamada nativa no existe o falla en silencio, que es justo lo que hacia
  * que el boton "no hiciera nada" en movil. Como respaldo universal (sirve
  * en cualquier navegador, no solo donde falta la API real), se ofrece un
- * modo pantalla completa por CSS: el propio #cam-wrap pasa a position:fixed
+ * modo pantalla completa por CSS: el propio elemento pasa a position:fixed
  * cubriendo todo el viewport. Se intenta primero la API nativa (mejor,
  * oculta tambien la barra del navegador donde SI esta soportada) y se cae
- * a este modo si no esta disponible o si la promesa falla. */
+ * a este modo si no esta disponible o si la promesa falla.
+ *
+ * Generica por CLASE (no por id de un elemento concreto) desde que la
+ * camara dejo de ser la unica con boton de pantalla completa -- el visor
+ * de gcode (2D o 3D) junto a ella la reutiliza tal cual (ver
+ * patchCameraGcodeToggle). Una unica inyeccion global sirve para
+ * cualquier numero de elementos con esta clase. */
 function injectPseudoFullscreenStyle() {
   if (document.getElementById("kxd-fullscreen-style")) return;
   const style = document.createElement("style");
   style.id = "kxd-fullscreen-style";
   style.textContent =
-    "#cam-wrap.kxd-pseudo-fullscreen{position:fixed!important;inset:0!important;" +
+    ".kxd-pseudo-fullscreen{position:fixed!important;inset:0!important;" +
     "width:100vw!important;height:100vh!important;max-height:100vh!important;" +
     "z-index:99999!important;border-radius:0!important;background:#000}" +
-    "#cam-wrap.kxd-pseudo-fullscreen img,#cam-wrap.kxd-pseudo-fullscreen video{" +
+    ".kxd-pseudo-fullscreen img,.kxd-pseudo-fullscreen video,.kxd-pseudo-fullscreen canvas{" +
     "max-height:100vh!important;height:100%!important}";
   document.head.appendChild(style);
 }
@@ -1133,20 +1371,22 @@ function patchCameraFilamentStrip() {
       svg.style.opacity = unavailable ? "0.4" : "1";
       if (unavailable) return;
 
-      // Al pasar el raton por una bobina, si el visor de gcode esta VISIBLE
-      // ahora mismo (compartiendo hueco con la camara, ver
-      // patchCameraGcodeToggle -- gcodePane pasa a display:none en el resto
-      // de casos: sin impresion activa, o pestaña "camara" seleccionada en
-      // movil), se resalta ahi el trazado de ese mismo canal -- mismo
-      // indice de slot que ya usa KX-Bridge para el color de la ranura (ver
-      // fd-slots/dataset.paint, mismo convenio que patchFilamentDialogPreview
-      // usa para su propia vista previa). El puente es camGcodeSetHighlightTool
-      // (variable de modulo, ver CameraGcodeViewer): sigue null si el visor
-      // ni siquiera esta montado (funcion cameraGcode desactivada, o sin
-      // impresion en curso), asi que la llamada es un no-op seguro.
+      // Al pasar el raton por una bobina, si el visor de gcode 2D esta
+      // VISIBLE ahora mismo (compartiendo hueco con la camara, ver
+      // patchCameraGcodeToggle -- #kxd-cam-gcode-2d-pane pasa a
+      // display:none si en vez de el se ve el 3D, la camara sola, o no hay
+      // impresion activa), se resalta ahi el trazado de ese mismo canal --
+      // mismo indice de slot que ya usa KX-Bridge para el color de la
+      // ranura (ver fd-slots/dataset.paint, mismo convenio que
+      // patchFilamentDialogPreview usa para su propia vista previa). Solo
+      // el 2D: el 3D no tiene un concepto de "resaltar herramienta" propio.
+      // El puente es camGcodeSetHighlightTool (variable de modulo, ver
+      // CameraGcodeViewer): sigue null si el visor ni siquiera esta
+      // montado (funcion cameraGcode desactivada, o sin impresion en
+      // curso), asi que la llamada es un no-op seguro.
       svg.style.cursor = "pointer";
       svg.addEventListener("mouseenter", () => {
-        const pane = document.getElementById("kxd-cam-gcode-pane");
+        const pane = document.getElementById("kxd-cam-gcode-2d-pane");
         if (pane && pane.style.display !== "none") camGcodeSetHighlightTool?.(i);
       });
       svg.addEventListener("mouseleave", () => camGcodeSetHighlightTool?.(null));
@@ -2664,9 +2904,13 @@ async function mount() {
     createRoot(mountShadowRoot(container)).render(<Widgets />);
   }
 
-  const gcodePane = document.getElementById("kxd-cam-gcode-pane");
-  if (gcodePane) {
-    createRoot(mountShadowRoot(gcodePane)).render(<CameraGcodeViewer />);
+  const gcode2dPane = document.getElementById("kxd-cam-gcode-2d-pane");
+  if (gcode2dPane) {
+    createRoot(mountShadowRoot(gcode2dPane)).render(<CameraGcodeViewer />);
+  }
+  const gcode3dPane = document.getElementById("kxd-cam-gcode-3d-pane");
+  if (gcode3dPane) {
+    createRoot(mountShadowRoot(gcode3dPane)).render(<CameraGcode3DViewer />);
   }
 
   // Sin shadow root (ver HaLightToggles -- necesita las clases nativas

@@ -30,6 +30,11 @@ const GLOW_MAX_OPACITY = 0.9;
 // justo al filo.
 const OCCLUSION_SAFETY_PX = 14;
 const CAMERA_SETTLE_RATE = 0.12;
+// Opacidad del "fantasma" (ver ghostUnprinted): visible lo justo para leer
+// su forma/orientacion contra el fondo, claramente distinto de una pieza
+// opaca de verdad -- ni casi invisible ni tan marcado que compita
+// visualmente con lo ya impreso.
+const GHOST_OPACITY = 0.16;
 
 interface MaterialEntry {
   object_index: number;
@@ -41,6 +46,11 @@ interface MaterialEntry {
 interface SceneState {
   render: () => void;
   materials: MaterialEntry[];
+  // Ver ghostUnprinted/printedHeightMm: un unico par de planos COMPARTIDO
+  // por todos los buckets (el corte es el mismo para toda la pieza), asi
+  // que actualizar la altura impresa es solo mover estas dos constantes --
+  // nunca reconstruye la escena. null si ghostUnprinted es false.
+  printedPlanes: { opaque: THREE.Plane; ghost: THREE.Plane } | null;
   animRaf: number | null;
   pulseStart: number;
   camera: THREE.OrthographicCamera;
@@ -85,6 +95,8 @@ export function PrintRenderScene({
   aspectClassName = "aspect-square",
   className = "",
   occluderRect = null,
+  ghostUnprinted = false,
+  printedHeightMm = null,
 }: {
   data: RenderData3D | null;
   loading?: boolean;
@@ -100,6 +112,18 @@ export function PrintRenderScene({
   // (highlightObject) queda tapada, y para calcular EXACTAMENTE cuanto
   // desplazar la camara para despejarla -- ni de mas ni de menos.
   occluderRect?: DOMRect | null;
+  // Vista "en curso de impresion" (CameraGcode3DViewer, junto a la camara):
+  // lo YA impreso se ve opaco de siempre, lo que falta en semi-transparente
+  // -- igual que la previsualizacion de secuencia de OrcaSlicer. false
+  // (por defecto) mantiene el comportamiento de siempre para el resto de
+  // usos de este componente (Vista previa antes de imprimir, etc.): pieza
+  // entera opaca, sin ningun corte.
+  ghostUnprinted?: boolean;
+  // Altura Z (mm, mismas unidades que el gcode) hasta la que se considera
+  // "ya impreso" -- solo importa si ghostUnprinted es true. Se actualiza en
+  // vivo (sondeo de estado) SIN reconstruir la escena entera: ver el efecto
+  // dedicado mas abajo, que solo mueve dos constantes de plano.
+  printedHeightMm?: number | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<SceneState | null>(null);
@@ -148,6 +172,24 @@ export function PrintRenderScene({
     renderer.shadowMap.type = tier === "alta" ? THREE.PCFShadowMap : THREE.BasicShadowMap;
     container.innerHTML = "";
     container.appendChild(renderer.domElement);
+
+    // "Local clipping" (material.clippingPlanes por material, no un corte
+    // global del renderer) es lo que permite que la pieza opaca y su
+    // fantasma convivan en la MISMA escena, cada uno recortado por su lado.
+    // Un unico par de planos para toda la pieza (no uno por bucket): el
+    // corte de altura es el mismo pase lo que pase el color/objeto.
+    let printedPlanes: { opaque: THREE.Plane; ghost: THREE.Plane } | null = null;
+    if (ghostUnprinted) {
+      renderer.localClippingEnabled = true;
+      // constant=Infinity al construir (antes de que el efecto dedicado de
+      // printedHeightMm fije el valor real): mantiene TODO del lado opaco y
+      // NADA del lado fantasma -- nunca se ve el modelo "roto" a medias
+      // mientras el estado en vivo aun no ha llegado.
+      printedPlanes = {
+        opaque: new THREE.Plane(new THREE.Vector3(0, -1, 0), Infinity),
+        ghost: new THREE.Plane(new THREE.Vector3(0, 1, 0), Infinity),
+      };
+    }
 
     // Caja delimitadora en espacio gcode (X/Y bandeja, Z altura), calculada
     // a mano sin asignar objetos por punto: con ficheros de millones de
@@ -208,11 +250,33 @@ export function PrintRenderScene({
         transparent: true,
       });
       material.fog = true;
+      if (printedPlanes) material.clippingPlanes = [printedPlanes.opaque];
       const mesh = new THREE.Mesh(geometry, material);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       group.add(mesh);
       disposables.push({ geometry, material });
+
+      // Fantasma: MISMO geometry (sin copiar vertices) y color, pero sin
+      // sombra propia (quedaria como una mancha oscura poco legible a esta
+      // opacidad) y recortado por el plano OPUESTO al de arriba -- entre
+      // los dos planos, cada punto del modelo cae siempre en uno u otro
+      // lado (nunca en ambos ni en ninguno), asi que la pieza se ve entera
+      // en todo momento, solo que partida en dos tratamientos visuales.
+      if (printedPlanes) {
+        const ghostMaterial = new THREE.MeshLambertMaterial({
+          color: `#${b.color_hex}`,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: GHOST_OPACITY,
+          depthWrite: false,
+          clippingPlanes: [printedPlanes.ghost],
+        });
+        ghostMaterial.fog = true;
+        const ghostPrintMesh = new THREE.Mesh(geometry, ghostMaterial);
+        group.add(ghostPrintMesh);
+        disposables.push({ material: ghostMaterial });
+      }
 
       // Centro (bbox) de ESTE bucket concreto (no el de la pieza entera):
       // el halo de glow se escala alrededor de este punto para que "crezca"
@@ -531,6 +595,7 @@ export function PrintRenderScene({
       frustumHalfWidth: viewSize * aspect,
       objectCorners,
       cameraAnimRaf: null,
+      printedPlanes,
     };
 
     return () => {
@@ -549,7 +614,22 @@ export function PrintRenderScene({
       container.innerHTML = "";
       stateRef.current = null;
     };
-  }, [data, quality]);
+  }, [data, quality, ghostUnprinted]);
+
+  // Solo mueve las dos constantes de plano compartidas (ver printedPlanes
+  // arriba) y vuelve a pintar UN frame -- nunca reconstruye la escena, asi
+  // que puede llamarse en cada sondeo de estado (varias veces por segundo
+  // durante una impresion en curso) sin sobresalto ni coste real. Infinity
+  // en ambos lados (altura desconocida) deja todo del lado opaco, igual que
+  // al construir la escena la primera vez.
+  useEffect(() => {
+    const state = stateRef.current;
+    if (!state?.printedPlanes) return;
+    const h = printedHeightMm;
+    state.printedPlanes.opaque.constant = h ?? Infinity;
+    state.printedPlanes.ghost.constant = h != null ? -h : Infinity;
+    state.render();
+  }, [printedHeightMm]);
 
   // Resaltado: SOLO la pieza/color sobre el que se pasa el cursor parpadea
   // (oscila de forma continua entre transparente y opaco) -- el resto se
