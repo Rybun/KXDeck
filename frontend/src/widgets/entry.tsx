@@ -788,7 +788,21 @@ function patchSidebarWheelForwarding() {
     "wheel",
     (e) => {
       if (sidebar.scrollHeight > sidebar.clientHeight) return;
-      main.scrollTop += e.deltaY;
+      // WheelEvent.deltaY no siempre viene en pixeles: deltaMode distingue
+      // pixel (0, lo habitual con trackpad/raton moderno -- sumar tal cual
+      // ya coincide con lo que hace un scroll nativo), linea (1, tipico de
+      // un raton de rueda clasico en Firefox/Windows: cada evento trae un
+      // numero pequeño, 3 lineas, no 3px) y pagina (2, raro). Sumar deltaY
+      // tal cual sin mirar el modo (como se hacia antes) solo es correcto
+      // en modo pixel -- en modo linea el sidebar se movia una fraccion
+      // diminuta de lo que se moveria la pagina con el mismo gesto, y de
+      // ahi el ritmo distinto que notaste. 16px/linea es la misma
+      // aproximacion que usan la mayoria de navegadores para su propia
+      // conversion nativa.
+      const LINE_HEIGHT_PX = 16;
+      const delta =
+        e.deltaMode === 1 ? e.deltaY * LINE_HEIGHT_PX : e.deltaMode === 2 ? e.deltaY * main.clientHeight : e.deltaY;
+      main.scrollTop += delta;
       e.preventDefault();
     },
     { passive: false },
