@@ -25,7 +25,7 @@ import moonraker_api
 import printer_control as pc
 import static
 from config import BLOCKED_HOSTS, DEBUG_REQUESTS, LISTEN_PORT, KX_URL, log
-from kx_client import KxFiles, KxHistory, KxState, LayerTracker, PauseSchedule, TempHistory
+from kx_client import GcodePauseSkips, KxFiles, KxHistory, KxState, LayerTracker, PauseSchedule, TempHistory
 
 
 # Pagina redirectora para que una notificacion de Home Assistant abra la
@@ -107,6 +107,7 @@ async def on_startup(app):
     app["history"] = KxHistory(app["session"])
     app["layer_tracker"] = LayerTracker()
     app["pause_schedule"] = PauseSchedule()
+    app["gcode_pause_skips"] = GcodePauseSkips()
     app["temp_history"] = TempHistory()
     app["widgets_js"] = kx_home.load_widgets_js()
     app["ha_settings"] = ha_settings.load_settings()

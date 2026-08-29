@@ -876,3 +876,66 @@ class PauseSchedule:
                 self._save()
                 return entry
         return None
+
+
+_GCODE_PAUSE_SKIPS_PATH = os.path.join(_PAUSE_SCHEDULE_DATA_DIR, "gcode_pause_skips.json")
+
+
+class GcodePauseSkips:
+    """Que capas con una pausa EMBEBIDA en el propio gcode (M600/M601, ver
+    KxFiles.layer_pause_points) ha decidido saltarse el usuario -- ligado al
+    fichero en curso, igual que PauseSchedule (y persistido con el mismo
+    criterio: es una decision suya, no un cache que se pueda recalcular).
+
+    No hay forma de "quitar" un M600 ya horneado en el fichero -- en vez de
+    eso, cuando esa pausa de verdad se dispare, tracker_loop la reconoce
+    aqui (is_skipped) y manda reanudar de inmediato, lo antes posible en
+    vez de esperar a que alguien pulse Reanudar a mano (ver tracker_loop en
+    printer_control.py). already_resumed/mark_resumed evitan reintentar el
+    resume en cada sondeo de 1s mientras dure esa misma pausa -- no hace
+    falta persistirlo (si el contenedor se reiniciase justo en ese
+    instante, el peor caso es un segundo intento de resume, inofensivo)."""
+
+    def __init__(self):
+        self._file = None
+        self._layers = set()
+        self._resumed = set()
+        self._load()
+
+    def _load(self):
+        try:
+            with open(_GCODE_PAUSE_SKIPS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        self._file = data.get("file")
+        self._layers = set(data.get("layers") or [])
+
+    def _save(self):
+        os.makedirs(_PAUSE_SCHEDULE_DATA_DIR, exist_ok=True)
+        tmp_path = _GCODE_PAUSE_SKIPS_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"file": self._file, "layers": sorted(self._layers)}, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, _GCODE_PAUSE_SKIPS_PATH)
+
+    def _ensure_file(self, filename):
+        if filename != self._file:
+            self._file = filename
+            self._layers = set()
+            self._resumed = set()
+            self._save()
+
+    def skip(self, filename, layer):
+        self._ensure_file(filename)
+        self._layers.add(layer)
+        self._save()
+
+    def is_skipped(self, filename, layer):
+        self._ensure_file(filename)
+        return layer in self._layers
+
+    def mark_resumed(self, layer):
+        self._resumed.add(layer)
+
+    def already_resumed(self, layer):
+        return layer in self._resumed

@@ -762,6 +762,39 @@ function patchFooterIntoMain() {
   main.appendChild(footer);
 }
 
+/** Reenvia la rueda del raton sobre nav.sidebar hacia <main> -- son
+ * HERMANOS (ambos hijos de .layout, ni ancestro ni descendiente el uno del
+ * otro), asi que el "scroll chaining" nativo del navegador (al pasar la
+ * rueda sobre un elemento sin nada que scrollear el mismo, sube por sus
+ * ANCESTROS buscando el primero que si pueda) nunca llega a main: desde
+ * nav.sidebar sube a .layout (sin overflow propio) y a body
+ * (overflow:hidden A PROPOSITO, ver _HEAD_EXTRA en kx_home.py, para que el
+ * sidebar no se arrastre fuera de la pantalla si la pagina scrollea) -- y
+ * ahi se corta, sin llegar nunca a main (que si tiene overflow-y:auto,
+ * pero es un hermano, no un ancestro). Antes de este fix, pasar el raton
+ * por el sidebar (su caso normal: 5 botones, nunca llega a desbordar la
+ * ventana) no scrolleaba nada en absoluto.
+ *
+ * Solo actua cuando el sidebar NO tiene nada que scrollear el mismo
+ * (scrollHeight<=clientHeight) -- si alguna vez si lo tiene (ver el propio
+ * "overflow-y:auto" nativo anadido en _HEAD_EXTRA, para una lista de
+ * impresoras/botones mas larga que la ventana), se le deja su
+ * comportamiento nativo intacto, sin interceptarlo. */
+function patchSidebarWheelForwarding() {
+  const sidebar = document.querySelector<HTMLElement>("nav.sidebar");
+  const main = document.querySelector<HTMLElement>("main");
+  if (!sidebar || !main) return;
+  sidebar.addEventListener(
+    "wheel",
+    (e) => {
+      if (sidebar.scrollHeight > sidebar.clientHeight) return;
+      main.scrollTop += e.deltaY;
+      e.preventDefault();
+    },
+    { passive: false },
+  );
+}
+
 function patchSidebarCollapse() {
   const sidebar = document.querySelector<HTMLElement>("nav.sidebar");
   if (!sidebar || document.getElementById("kxd-sidebar-toggle")) return;
@@ -2109,18 +2142,22 @@ function getPopoverPortalRoot(): HTMLElement {
 }
 
 /** Menu "⋮" junto al boton nativo de Pausa (#kxd-pause-menu-root, marcador
- * insertado en kx_home.py justo despues de #d-btn-pause): pausas
- * programadas por capa o por tiempo transcurrido para la impresion en
+ * insertado en kx_home.py justo despues de #d-btn-pause): solo PROGRAMAR
+ * una pausa nueva por capa o por tiempo transcurrido para la impresion en
  * curso. El backend YA las vigila (ver PauseSchedule en kx_client.py,
  * consultada en cada vuelta de tracker_loop) desde antes de que existiera
- * esta interfaz -- esto solo le añade una forma de programarlas/verlas/
- * borrarlas, sin tocar esa logica.
+ * esta interfaz -- esto solo le añade una forma de programarlas.
  *
- * Sin prop de fileId propia: el backend ya liga la lista al fichero que
- * este imprimiendo AHORA MISMO (ver h_kxdeck_pause_schedule_list, lee
- * kx.filename el mismo), asi que aqui basta con no mostrar nada mientras
- * no hay impresion -- igual que el propio boton de Pausa (#d-ctrl-btns)
- * esta oculto en ese caso.
+ * Ver/quitar las ya programadas (o las del propio gcode) vive en la
+ * tarjeta Progreso (ScheduledPausesList, mas abajo) -- tenerlo tambien
+ * aqui era redundante, y con la impresion avanzando esta lista se quedaba
+ * obsoleta en cuanto se cerraba el popover.
+ *
+ * Sin prop de fileId propia: el backend ya liga la programacion al
+ * fichero que este imprimiendo AHORA MISMO (ver h_kxdeck_pause_schedule_add,
+ * lee kx.filename el mismo), asi que aqui basta con no mostrar nada
+ * mientras no hay impresion -- igual que el propio boton de Pausa
+ * (#d-ctrl-btns) esta oculto en ese caso.
  *
  * El desplegable se renderiza vía createPortal en getPopoverPortalRoot()
  * (fijo por coordenadas, no "absolute" colgado del boton) para escapar del
@@ -2148,19 +2185,13 @@ function PauseScheduleMenu() {
 
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
-  const [entries, setEntries] = useState<PauseScheduleEntry[]>([]);
   const [kind, setKind] = useState<"layer" | "time">("layer");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-
-  function refresh() {
-    apiGet<{ entries: PauseScheduleEntry[] }>("/api/kxdeck/pause-schedule")
-      .then((d) => setEntries(d.entries))
-      .catch(() => {});
-  }
 
   // Recalcula la posicion a partir del boton real cada vez -- nunca se fija
   // "una vez" porque la tarjeta (o la ventana) puede haber scrolleado/
@@ -2179,7 +2210,6 @@ function PauseScheduleMenu() {
 
   useEffect(() => {
     if (!open) return;
-    refresh();
     reposition();
   }, [open]);
 
@@ -2244,22 +2274,14 @@ function PauseScheduleMenu() {
       const value_ = kind === "time" ? Math.round((data?.kx.print_duration ?? 0) + n * 60) : Math.round(n);
       await apiPost("/api/kxdeck/pause-schedule", { kind, value: value_ });
       setValue("");
-      refresh();
+      // Confirmacion breve en vez de dejar el formulario tal cual -- sin
+      // lista aqui dentro (ver ScheduledPausesList, en la tarjeta Progreso)
+      // no habia forma de saber si de verdad se habia guardado.
+      setSuccess(true);
     } catch {
       setError("No se ha podido programar.");
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function remove(id: number) {
-    try {
-      await apiDelete(`/api/kxdeck/pause-schedule/${id}`);
-      refresh();
-    } catch {
-      // Silencioso: si de verdad fallo, la entrada sigue en la lista tal
-      // cual estaba (refresh() no se llega a ejecutar), no hace falta mas
-      // aviso que eso.
     }
   }
 
@@ -2282,21 +2304,7 @@ function PauseScheduleMenu() {
             style={{ position: "fixed", top: coords.top, left: coords.left }}
             className="z-50 w-64 space-y-2 rounded-xl border border-neutral-100/10 bg-neutral-900 p-3 text-sm text-neutral-100 shadow-xl"
           >
-            <div className="font-semibold">⏸ Pausas programadas</div>
-            {entries.length > 0 && (
-              <div className="space-y-1">
-                {entries.map((e) => (
-                  <div key={e.id} className="flex items-center justify-between gap-2 rounded-lg bg-neutral-500/10 px-2 py-1">
-                    <span className={e.triggered ? "text-neutral-500 line-through" : ""}>
-                      {e.kind === "layer" ? `Capa ${e.value}` : `A los ${Math.round(e.value / 60)} min`}
-                    </span>
-                    <button onClick={() => remove(e.id)} className="text-neutral-400 hover:text-red-400" title="Quitar">
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="font-semibold">⏸ Programar pausa</div>
             <div className="space-y-1.5">
               {/* En su propia fila (no encaja junto al resto sin apretujarse
                * en las 256px del popover) -- el texto de cada opcion ya deja
@@ -2308,6 +2316,7 @@ function PauseScheduleMenu() {
                 onChange={(e) => {
                   setKind(e.target.value as "layer" | "time");
                   setError(null);
+                  setSuccess(false);
                 }}
                 className="w-full rounded-lg border border-neutral-100/10 bg-neutral-800 px-1.5 py-1 text-xs"
               >
@@ -2320,7 +2329,10 @@ function PauseScheduleMenu() {
                   min={kind === "layer" ? minLayer : 1}
                   max={kind === "layer" ? maxLayer : undefined}
                   value={value}
-                  onChange={(e) => setValue(e.target.value)}
+                  onChange={(e) => {
+                    setValue(e.target.value);
+                    setSuccess(false);
+                  }}
                   placeholder={
                     kind === "layer" ? `${minLayer}${maxLayer != null ? `–${maxLayer}` : "+"}` : "minutos"
                   }
@@ -2336,6 +2348,9 @@ function PauseScheduleMenu() {
               </div>
             </div>
             {error && <p className="text-xs text-red-400">{error}</p>}
+            {success && !error && (
+              <p className="text-xs text-emerald-400">✓ Programada -- ver "Próximas pausas" en Progreso.</p>
+            )}
           </div>,
           getPopoverPortalRoot(),
         )}
@@ -2406,30 +2421,49 @@ function ScheduledPausesList() {
   const printing = Boolean(data?.state.flags.printing || data?.state.flags.paused);
   const [entries, setEntries] = useState<PauseScheduleEntry[]>([]);
 
+  function refresh() {
+    apiGet<{ entries: PauseScheduleEntry[] }>("/api/kxdeck/pause-schedule")
+      .then((d) => setEntries(d.entries))
+      .catch(() => {});
+  }
+
   useEffect(() => {
     if (!printing) {
       setEntries([]);
       return;
     }
-    let cancelled = false;
-    function refresh() {
-      apiGet<{ entries: PauseScheduleEntry[] }>("/api/kxdeck/pause-schedule")
-        .then((d) => {
-          if (!cancelled) setEntries(d.entries);
-        })
-        .catch(() => {});
-    }
     refresh();
     const id = window.setInterval(refresh, 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
+    return () => window.clearInterval(id);
     // data?.job.file.name en las deps: al cambiar de fichero (impresion
     // nueva) refresca de inmediato -- el backend ya vacia la lista sola en
     // cuanto detecta el cambio (ver PauseSchedule._ensure_file), pero sin
     // esto aqui se veria con hasta 4s de retraso.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printing, data?.job.file.name]);
+
+  async function removeSchedule(id: number) {
+    try {
+      await apiDelete(`/api/kxdeck/pause-schedule/${id}`);
+      refresh();
+    } catch {
+      // Silencioso -- si de verdad fallo, la entrada sigue en la lista
+      // tal cual estaba.
+    }
+  }
+
+  async function skipGcodePause(layer0: number) {
+    // No hace falta quitarla de la lista a mano aqui: data.gcode_pause_layers
+    // llega por el propio websocket (~1.5s) y el backend ya la filtra fuera
+    // en cuanto se marca (ver job_payload/GcodePauseSkips), asi que
+    // desaparece sola en el siguiente tick -- igual que el resto de datos
+    // en vivo de esta tarjeta.
+    try {
+      await apiPost("/api/kxdeck/pause-schedule/gcode-skip", { layer: layer0 });
+    } catch {
+      // Silencioso, mismo motivo que removeSchedule.
+    }
+  }
 
   if (!printing || !data) return null;
 
@@ -2462,7 +2496,13 @@ function ScheduledPausesList() {
     return { layersLeft: null as number | null, etaSeconds: null as number | null };
   }
 
-  const upcoming: { key: string; label: string; layersLeft: number | null; etaSeconds: number | null }[] = [];
+  const upcoming: {
+    key: string;
+    label: string;
+    layersLeft: number | null;
+    etaSeconds: number | null;
+    onRemove: () => void;
+  }[] = [];
 
   for (const e of entries) {
     if (e.triggered) continue;
@@ -2473,6 +2513,7 @@ function ScheduledPausesList() {
       label: e.kind === "layer" ? `Capa ${e.value}` : `Minuto ${Math.round(e.value / 60)}`,
       layersLeft,
       etaSeconds,
+      onRemove: () => removeSchedule(e.id),
     });
   }
 
@@ -2483,7 +2524,13 @@ function ScheduledPausesList() {
     const targetLayer = layer0 + 1;
     if (currLayer != null && targetLayer <= currLayer) continue;
     const { layersLeft, etaSeconds } = estimate(targetLayer, null);
-    upcoming.push({ key: `g${layer0}`, label: `Capa ${targetLayer}`, layersLeft, etaSeconds });
+    upcoming.push({
+      key: `g${layer0}`,
+      label: `Capa ${targetLayer}`,
+      layersLeft,
+      etaSeconds,
+      onRemove: () => skipGcodePause(layer0),
+    });
   }
 
   if (upcoming.length === 0) return null;
@@ -2508,12 +2555,29 @@ function ScheduledPausesList() {
             }}
           >
             <span>{p.label}</span>
-            <span style={{ color: "var(--txt2)", textAlign: "right" }}>
-              {p.layersLeft != null && `${p.layersLeft} capas · `}
-              {p.etaSeconds != null
-                ? `en ${formatDurationShort(p.etaSeconds)} (~${formatClock(new Date(Date.now() + p.etaSeconds * 1000))})`
-                : "—"}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ color: "var(--txt2)", textAlign: "right" }}>
+                {p.layersLeft != null && `${p.layersLeft} capas · `}
+                {p.etaSeconds != null
+                  ? `en ${formatDurationShort(p.etaSeconds)} (~${formatClock(new Date(Date.now() + p.etaSeconds * 1000))})`
+                  : "—"}
+              </span>
+              <button
+                onClick={p.onRemove}
+                title="Quitar pausa"
+                style={{
+                  color: "#ef4444",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  lineHeight: 1,
+                  padding: 0,
+                }}
+              >
+                ✕
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -2553,6 +2617,7 @@ async function mount() {
 
   injectSpoolKeyframes();
   patchFooterIntoMain();
+  patchSidebarWheelForwarding();
   patchNativeCamera();
   if (isFeatureEnabled("haLight")) patchNativeCameraLight();
   if (isFeatureEnabled("sidebarCollapse")) patchSidebarCollapse();

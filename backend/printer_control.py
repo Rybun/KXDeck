@@ -141,6 +141,7 @@ async def job_payload(request):
     kx = await request.app["kx"].get()
     files = request.app["files"]
     tracker = request.app["layer_tracker"]
+    gcode_pause_skips = request.app["gcode_pause_skips"]
     text, _ = octo_state(kx)
     kobra = (kx.get("kobra_state") or "").lower()
     printing_now = is_printing(kx)
@@ -240,7 +241,15 @@ async def job_payload(request):
         # campo no-OctoPrint a esa respuesta, que tambien usa el OctoApp
         # real). [] mientras el indexado de capas no ha terminado todavia
         # (ensure_layer_offsets ya se disparo arriba si hacia falta).
-        "kxd_pause_layers": files.layer_pause_points(entry.get("id")) if entry else [],
+        # Sin las que el usuario ya marco para saltarse (ver
+        # GcodePauseSkips/h_kxdeck_pause_schedule_gcode_skip) -- asi la
+        # tarjeta Progreso deja de listarla en cuanto se pulsa la X, sin
+        # que el frontend tenga que llevar la cuenta el mismo de cuales
+        # estan "tachadas".
+        "kxd_pause_layers": (
+            [l for l in files.layer_pause_points(entry.get("id")) if not gcode_pause_skips.is_skipped(fn, l)]
+            if entry else []
+        ),
     }
 
 
@@ -617,6 +626,8 @@ async def tracker_loop(app):
     """
     tracker = app["layer_tracker"]
     pause_schedule = app["pause_schedule"]
+    gcode_pause_skips = app["gcode_pause_skips"]
+    files = app["files"]
     temp_history = app["temp_history"]
     kx = app["kx"]
     session = app["session"]
@@ -640,6 +651,37 @@ async def tracker_loop(app):
                             await _send_job_command(session, "/printer/print/pause")
                         except Exception as exc:
                             log.error("pausa programada fallo: %s", exc)
+                elif (state.get("kobra_state") or "").lower() == "paused":
+                    # Pausada de verdad (no en reposo/error/moviendo ejes):
+                    # si la capa en la que esta parada trae una pausa
+                    # EMBEBIDA en el gcode (M600/M601) que el usuario marco
+                    # para saltarse (ver GcodePauseSkips/h_kxdeck_pause_
+                    # schedule_gcode_skip), se reanuda sola aqui mismo, lo
+                    # antes posible -- sin esperar a que alguien pulse
+                    # Reanudar a mano. Nunca afecta a una pausa PROGRAMADA
+                    # por KXDeck (esas nunca estan en gcode_pause_skips) ni
+                    # a una pausada manualmente por el usuario en una capa
+                    # sin ningun M600 real (gcode_pause_skips solo contiene
+                    # capas que layer_offsets() encontro de verdad).
+                    filename = state.get("filename")
+                    curr_layer = state.get("curr_layer") or 0
+                    entry = await files.find_by_name(filename) if filename else None
+                    if entry:
+                        for layer0 in files.layer_pause_points(entry.get("id")):
+                            target_layer = layer0 + 1  # ver layer_pause_points: 0-based
+                            if target_layer > curr_layer:
+                                continue
+                            if not gcode_pause_skips.is_skipped(filename, layer0):
+                                continue
+                            if gcode_pause_skips.already_resumed(layer0):
+                                continue
+                            gcode_pause_skips.mark_resumed(layer0)
+                            log.info("pausa de gcode saltada por el usuario en capa %s: reanudando", target_layer)
+                            try:
+                                await _send_job_command(session, "/printer/print/resume")
+                            except Exception as exc:
+                                log.error("reanudar pausa de gcode fallo: %s", exc)
+                            break
             except Exception as exc:
                 log.debug("tracker loop: %s", exc)
             await asyncio.sleep(1)

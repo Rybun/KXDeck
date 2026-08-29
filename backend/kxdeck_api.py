@@ -611,6 +611,29 @@ async def h_kxdeck_pause_schedule_delete(request):
     return web.Response(status=204)
 
 
+async def h_kxdeck_pause_schedule_gcode_skip(request):
+    """POST /api/kxdeck/pause-schedule/gcode-skip {layer: int} -> marca esa
+    pausa EMBEBIDA en el gcode (capa 0-based, mismo indice que
+    gcode_pause_layers en el websocket) para reanudarse sola en cuanto se
+    dispare de verdad -- no se puede "quitar" el propio M600 del fichero,
+    ver GcodePauseSkips/tracker_loop."""
+    if not check_key(request):
+        return deny()
+    try:
+        body = await request.json()
+        layer = int(body.get("layer"))
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    kx = await request.app["kx"].get()
+    filename = kx.get("filename")
+    if not filename:
+        return web.json_response({"error": "no hay impresion activa"}, status=400)
+
+    request.app["gcode_pause_skips"].skip(filename, layer)
+    return web.Response(status=204)
+
+
 async def h_kxdeck_ws(request):
     """Websocket JSON plano (sin el envoltorio SockJS de OctoPrint) para el
     dashboard de KXDeck."""
@@ -682,3 +705,4 @@ def register(router):
     router.add_get("/api/kxdeck/pause-schedule", h_kxdeck_pause_schedule_list)
     router.add_post("/api/kxdeck/pause-schedule", h_kxdeck_pause_schedule_add)
     router.add_delete("/api/kxdeck/pause-schedule/{id}", h_kxdeck_pause_schedule_delete)
+    router.add_post("/api/kxdeck/pause-schedule/gcode-skip", h_kxdeck_pause_schedule_gcode_skip)
